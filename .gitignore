@@ -1,0 +1,4 @@
+# Blender rebuilds these from the sources; they were being committed from inside the extension by accident.
+__pycache__/
+*.pyc
+*.pyo

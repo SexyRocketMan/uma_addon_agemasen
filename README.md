@@ -1,0 +1,123 @@
+# Blender-Uma-Addon
+
+## Agemasen build
+
+This is the **Agemasen build** of the addon: the fork that goes with the
+[UmaViewer PMX Export Patch](https://github.com/SexyRocketMan/UmaViewer-PMX-Export-Patch) (the "Ultimate
+Agemasen Edition" fork of umaviewer).
+
+It is a clean rebuild. The upstream addon at commit `a6de9e1` is the base, and on top of it sit exactly two
+things: the fork's Agemasen naming compatibility, and a compatibility layer that lets one code base run on
+Blender **4.2 through 5.2**. `git diff a6de9e1 HEAD` is the complete list of changes, and it is deliberately
+small - about 1600 lines, most of it documentation and the shader.
+
+* **Morph naming** (`uma_addon/addons/uma_addon/utils/naming.py`): shape keys are asked for by meaning, so all
+  three UmaViewer spellings resolve - `EyeBrow_1_R(WaraiA)[M_Face]`, `EyeBrow_1_R`, `Brow_WaraiA_R` - where
+  upstream matched literal strings. See `docs/MORPH_NAMES.md`.
+* **Blender 4.2 - 5.2** (`uma_addon/addons/uma_addon/utils/compat.py`): Blender 5.0 moved bone selection and
+  pose-mode bone visibility from `Bone` to `PoseBone`, and removed the legacy `Action` API
+  (`action.fcurves`, `action.groups`, `action.id_root`). Everything that touches those goes through the one
+  shim module, so the operators stay version-free.
+* **Shading is upstream's operator**, kept as it ships, apart from two things. Upstream writes the outline
+  modifier's depth offset as `geom_mod["Input_15"] = 0.1`, an ID property on the modifier, and Blender 5.2 no
+  longer keeps node-group modifier inputs there - that one write goes through a version-safe helper. And the
+  **"Contain the outline" checkbox** in the Processing Model panel (on by default) makes Shading point the
+  Uma Outlines modifier at the scene camera, give the shell a usable width where the export's channel holds
+  packed vertex colours rather than an outline normal set, and give it the shipped outline material. Untick it
+  for upstream's behaviour exactly. The measurements and the reasoning are in `docs/OUTLINES.md`.
+* **Packaging**: build the zip with
+  `blender --command extension build --source-dir <this folder> --output-dir <out>`.
+  Zipping the folder by hand nests `blender_manifest.toml` one level too deep, Blender rejects the archive
+  ("archive has no manifest") and falls back to the legacy installer - which needs the addon to import
+  correctly from `scripts/addons`, and it does.
+
+If Blender's console prints `UMA Addon build agemasen-1 ... loaded from <path>` after enabling, that is
+this build, and the path tells you which copy of several possible installs is being used.
+
+The rest of this file is the upstream documentation.
+
+本插件基于Blender 4.5.7 LTS开发，可用于简化处理从**umaviewer**导出的赛马娘模型的操作。其包含的功能有骨架分层、生成控制器、快速修复迷你赛马娘模型等。在以下版本中测试插件，功能正常。在4.0.0版本以下，插件一定无法正常运行所有功能。  
+
+        4.5.7 LTS，4.2.18 TLS  
+如果插件无法正常工作，请尝试切换到推荐版本处理模型后，再追加到你正在使用的版本，或者进行反馈（无法及时回复）。如果仍然无法解决问题，请进行反馈。
+
+## 功能  Functions
+安装插件后，本插件的面板会出现在UMA面板中。
+
+**导入 Import**  
+mmd_tools的导入功能。
+
+**骨架分层 Set Bone Collections**  
+从umaviewer直接导出的赛马娘模型，骨骼繁多，不便操控。选中骨架后点击骨架分层，插件就会创建多个骨骼集合，将除主体骨骼外的其他骨骼隐藏，你可以随时调整这些骨骼集合的可见性，从而控制你想控制的骨骼。 
+
+**优化形态 Refine Structure**  
+为从umaviewer直接导出的赛马娘模型创建左右眼对称的形态键，并添加驱动器，使其可以被眼部骨骼的旋转控制；调整部分末端骨骼的形态；将躯干中原本就相连的骨骼设置为相连项。
+
+**删除 Del**  
+选中骨架后点击删除，选中的骨骼集合就会被删除，其中Face集合中的骨骼权重会被转移给骨骼Head，如果选中的骨骼集合中存在你想保留的骨骼，请将你想保留的骨骼提前移出该骨骼集合。
+
+**着色 Shading**  
+选中网格后点击着色，选中的模型就会被直接添加上赛马娘着色，并自动匹配贴图和调整参数。  
+
+本插件只是提供一键应用赛马娘着色的功能。如果出现插件一键应用赛马娘着色的效果与原项目不同等由本插件造成的问题，请进行反馈。如果对着色效果有疑问请咨询原作者。
+
+赛马娘着色项目原地址，目前使用的是Umashaders v0.2.4，如果更新了可以提醒我一下。
+>https://github.com/LooperHonstropy/BLENDER-Uma-Musume-Pretty-Derby-Shaders
+
+**修复迷你赛马娘模型 Fix mini umamusume model**  
+处理方法参考
+>https://www.bilibili.com/video/BV1LhbGzQEUY
+
+**使用形态键驱动耳朵骨骼 Use shape keys to drive ear bones**   
+仅适配我提供的umaviewer导出的模型。umaviewer导出的赛马娘模型的耳朵形态键是控制网格的，这使得耳朵的外观只有在初末状态有正常的外观，在中间状态由于形态键是线性插值，会导致耳朵大小有变化。
+
+选择模型的头型对应的配置文件，进行此操作后，即可使用形态键驱动耳朵骨骼。
+
+**物理 Physics**  
+选中骨架后可以为相应部位启用物理效果。只是添加上简单的阻尼追踪。
+
+**UMA 动作 UMA Action**  
+仅适配我提供的umaviewer导出的模型。为赛马娘添加内置动画。（在网格上添加耳朵动画）  
+双击动作可以改变动作名称。
+
+**动作 Action**   
+将人形动画应用到赛马娘模型上。  
+
+使用此功能，你需要有一个动画来源和动画目标。  
+动画来源：一个能较好承载动画的骨架  
+动画目标：一个赛马娘模型的骨架  
+首先，将两个骨架在姿态模式摆成相同的姿态。  
+接着，选择好两个骨架后进行映射。  
+然后，调整映射关系，使得你改变动画来源的姿态时，赛马娘也会有相同的变化。（开启Hip的位移复制后，会使两个模型重合）  
+最后，烘焙动画。（选中Hip，移动到Hip的位移应该为0的帧，点击位移归零，可以使赛马娘回到原位置）  
+
+原插件：
+>https://github.com/kumopult/blender_BoneAnimCopy
+
+**自动捩骨 Auto Twist**  
+仅适配我提供的umaviewer导出的模型。为选中模型的ShoulderRoll和ArmRoll添加约束，自动调整其朝向。  
+请不要在使用MMR控制器或者其他已经有自动捩骨功能的控制器的情况下再启用此功能。
+
+**生成 IK Generate IK**  
+仅适配我提供的umaviewer导出的模型。为选中模型生成简单的IK控制器。
+
+**烘焙 FK 到 IK Bake FK to IK**  
+在场景帧范围内，把选中模型原本就有的FK动作烘焙到上述 *生成 IK* 操作生成的IK控制器上。
+
+**为赛马娘生成控制器 Generate controller for umamusume**  
+如果你安装了MikuMikuRig 4.5-2.00 LTS，在MMR的主面板下就会出现这个按钮，点击后可以直接为赛马娘生成控制器。
+如果你先安装此插件，后安装MMR，需要重启此插件，这个按钮才能显示。
+>https://github.com/XiaoFFGe/MikuMikuRig  
+>https://wwcb.lanzn.com/b00taqmfwb 密码:6666
+
+**纹狸 Tanuki Texture**  
+在着色器编辑器的纹理中新增纹狸节点。可以按照不同速率循环播放GIF。  
+此节点的典型用法是添加图像为网格平面后，把其中的图像纹理节点替换为纹狸节点，这样你就可以获得一个循环播放GIF的网格平面。  
+使用此节点需要安装依赖库Pillow，可以在插件的偏好设置处安装。
+此节点会在%USERPROFILE%\AppData\Local\Temp\tanuki_cache处生成缓存。若源GIF的地址没有变化，则缓存可以复用。
+
+**改变狸 Tanuki Switch**  
+在着色器编辑器的转换器中新增改变狸节点。可以从多个图像输入中选择一个作为输出。
+
+## 反馈  Feedback
+https://www.bilibili.com/opus/1101994702993883141?spm_id_from=333.1387.0.0
