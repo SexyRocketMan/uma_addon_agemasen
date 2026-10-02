@@ -509,9 +509,12 @@ def describe_style(entry):
         return "no style"
     colours = [rule for rule in (entry.get("colors") or []) if isinstance(rule, dict) and rule.get("color")]
     armature = entry.get("armature") or {}
+    obj = entry.get("object") or {}
+    # `show_in_front` is the object's, so it is read from there; asking the armature block printed `None` in a
+    # trace until this probe's first run caught it
     return ("%s: %d colour rule(s), display %s, show_in_front=%s, widgets scaled by bone=%s"
             % (entry.get("key"), len(colours), armature.get("display_type"),
-               armature.get("show_in_front"), (entry.get("control_size") or {}).get("bone_size")))
+               obj.get("show_in_front"), (entry.get("control_size") or {}).get("bone_size")))
 
 
 # ----------------------------------------------------------------------------------------------------

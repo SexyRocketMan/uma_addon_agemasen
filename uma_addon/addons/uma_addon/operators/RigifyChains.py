@@ -47,7 +47,8 @@ from mathutils import Matrix, Vector
 # The rig display styles: one JSON file per style in `<config>/uma_addon/styles/`, his own style shipped as the
 # default. Display only - the data, the apply, and the capture all live in `RigStyles` (handoff 9al/9am).
 from .RigStyles import (STYLE_NONE, apply_style, capture_style, describe_style, ensure_style_files, forget_styles,
-                        find_generated_rig, read_style, style_dir, style_files, style_items)
+                        find_generated_rig, read_style, save_style, style_dir, style_filename, style_files,
+                        style_items)
 
 # rigify's own prefixes, used to recognise the armature it generated
 GENERATED_PREFIXES = ("ORG-", "DEF-", "MCH-")
