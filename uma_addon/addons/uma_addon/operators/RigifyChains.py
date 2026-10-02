@@ -69,8 +69,27 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # Blender keeps a loaded add-on module in memory until it is disabled/enabled or Blender restarts, so an
 # edited file on disk changes nothing until then - that is what the version report after every run is for.
 # Bump BUILD_TAG on every change, and keep it the first word of BUILD.
-BUILD_TAG = "chains-34"
-BUILD = ("chains-34: the panel comes up empty bug. The cross-costume preset note was added to `sync_preset` "
+BUILD_TAG = "chains-35"
+BUILD = ("chains-35: the code review's findings, fixed. A review of the whole file (12 findings, handoff 9ai) "
+         "found the shipped behaviour wrong in five places and a panel that promised things it did not do. "
+         "`execute` was writing into `load_rules`' *cached* options dict, so `Resample = From rules file` - whose "
+         "job is to read that dict - inherited whatever the *previous run in the same Blender session* set: run "
+         "`Even` then `From rules file` and the second run still respaced the joints (measured, "
+         "`resample_cache_check.py`; now `keep`). `name not in unconnected_joints` compared a bare bone name "
+         "against strings formatted `\"<bone> (0.0012 m gap)\"`, so the guard never fired and a bbone chain child "
+         "at a gapped joint always took the rotation-only path instead of the position follow its own comment "
+         "promises. Per-rule `resample` and `connect_chain` were copied into resolved rules by the resolver and "
+         "never read back - a per-family setting in the file was a silent no-op; both are honoured now. The "
+         "shadowing check skipped over skip rules, so a skip that swallowed a typed family passed as typed. "
+         "`_report_coverage` omitted `Ear` from the prefix tuple `physics_families` uses, so it could print "
+         "`every physics family in this model got a rule` while contradicting itself. And the panel: the `Step` "
+         "it *states* is now the step the run takes (`invoke` applies the detection), `sync_group_fields` runs on "
+         "every redraw so a Simple row cannot show a stale answer after an Advanced edit, `preset_items` prefers "
+         "the active armature the run will rigify, two `except` blocks that swallowed real failures print why, the "
+         "preset cache has a `loaded` flag (`no presets yet` is not a cache miss), the `Save as preset` guard "
+         "checks the sanitised *filename* as well as the key (`1004 00` and `1004_00` both write "
+         "`1004_00.json`), and an unknown rig type in the rules file fails a check instead of being applied "
+         "silently while the row reads `Follow`. Previous: chains-34: the panel comes up empty bug. The cross-costume preset note was added to `sync_preset` "
          "instead of `_refresh_families`; `sync_preset` is the first thing `draw` calls and has no `identity`, so "
          "every redraw raised NameError and the dialog drew nothing. The user found it - not the 125-model fleet "
          "and not the panel probe, which called `_refresh_families`, `adopt_group_edits` and `sync_group_fields` "
@@ -527,7 +546,7 @@ PRESET_CUSTOM = "custom"
 # clicking the preset list stutter. Both are cached against a stamp of the folder (file count + its mtime), and
 # anything that writes a preset clears the cache, so the only case the stamp misses is a file edited outside
 # Blender, which the `Reload presets` button covers.
-_PRESET_CACHE = {"stamp": None, "presets": {}}
+_PRESET_CACHE = {"stamp": None, "presets": {}, "loaded": False}
 _RULES_CACHE = {"stamp": None, "rules": None, "options": None, "source": None}
 
 
@@ -549,6 +568,7 @@ def forget_presets():
     """Drop the cache, so the next read comes off disk. Called by anything that writes a preset."""
     _PRESET_CACHE["stamp"] = None
     _PRESET_CACHE["presets"] = {}
+    _PRESET_CACHE["loaded"] = False
     _RULES_CACHE["stamp"] = None
 
 
@@ -736,7 +756,10 @@ def load_profiles(path=None, force=False):
     `preset_mismatch`) and reading 99 files per redraw made the preset list stutter.
     """
     stamp = preset_stamp()
-    if not force and _PRESET_CACHE["stamp"] == stamp and _PRESET_CACHE["presets"]:
+    # `_PRESET_CACHE["loaded"]` rather than a truthiness test on the dict: "no presets yet" is a valid answer that
+    # an empty dict also spells, so on a fresh install every redraw re-listed the folder *and* re-read the rules
+    # file for the legacy fallback - the stutter this cache exists to prevent (code review, handoff 9ai).
+    if not force and _PRESET_CACHE["loaded"] and _PRESET_CACHE["stamp"] == stamp:
         return _PRESET_CACHE["presets"]
     presets = preset_files()
     if not presets:
@@ -752,6 +775,7 @@ def load_profiles(path=None, force=False):
                        if isinstance(entry, dict) and entry.get("families")}
     _PRESET_CACHE["stamp"] = stamp
     _PRESET_CACHE["presets"] = presets
+    _PRESET_CACHE["loaded"] = True
     return presets
 
 
@@ -802,10 +826,19 @@ def preset_items(self, context):
     try:
         rules_file = getattr(self, "Rules_File", "") or ""
         presets = load_profiles(bpy.path.abspath(rules_file) if rules_file else None)
-    except Exception:  # noqa: BLE001
+    except Exception as error:  # noqa: BLE001
+        # A dropdown must not raise, but it must not be silent either: this is the "the preset list is empty and
+        # nothing says why" case, and a line on the console costs nothing (code review, handoff 9ai).
         presets = {}
+        print("[rigify_chains] the preset list could not be read (%s: %s); the dropdown shows Default only"
+              % (type(error).__name__, error))
     identity = None
-    armatures = [obj for obj in getattr(context, "selected_objects", []) if obj.type == 'ARMATURE']
+    # The active armature first, because that is the one `_find_model_armature` rigifies: with two characters in
+    # one file, "selected objects" and "the active object" are not the same set, and the list *and* the run have
+    # to be talking about the same character (code review, handoff 9ai).
+    active = getattr(context, "active_object", None)
+    armatures = ([active] if active is not None and active.type == 'ARMATURE' else [])
+    armatures += [obj for obj in getattr(context, "selected_objects", []) if obj.type == 'ARMATURE']
     armatures += [obj for obj in getattr(context, "scene", context).objects if obj.type == 'ARMATURE']
     for armature in armatures:
         identity, _bone = model_identity(armature)
@@ -1056,6 +1089,15 @@ def resolve_rule_modes(model, rules, family_modes, table_modes, fixed, never, tr
                     rig_type, source = None, "nothing names it"
             else:
                 rig_type, source = MODE_TYPES.get(mode), "set to %s" % mode
+            # A type the table names that this build does not know (`limbs.spline_tentacles` in a hand-edited
+            # file) used to be applied verbatim to `rigify_type` while the panel's row showed it as `Follow`
+            # (`family_defaults` falls back to MODE_STUB silently), so the rig disagreed with the panel and the
+            # failure surfaced later, from rigify. `preset_modes` reports the same case; this makes the table
+            # path report it too (code review, handoff 9ai).
+            if base_rule is not None and str(base_rule.get("type")) not in TYPE_MODES:
+                trace.check("every rule's rig type is one this build knows", False,
+                            "rule %s names '%s', which is not a rigify type this build recognises; rigify will "
+                            "be handed it as it is" % (unit["pattern"], base_rule.get("type")))
         if rig_type is None:
             for family in families_here:
                 report.append((group, family, None, source, unit["pattern"]))
@@ -1120,15 +1162,22 @@ def resolve_rule_modes(model, rules, family_modes, table_modes, fixed, never, tr
             continue
         bone = rule["setup_decides"]
         for candidate in final:
-            if candidate.get("skip"):
-                continue
             try:
-                if re.match(str(candidate["pattern"]), bone):
-                    if candidate is not rule:
-                        shadowed.append("%s is claimed by %s" % (bone, candidate.get("pattern")))
-                    break
+                if not re.match(str(candidate["pattern"]), bone):
+                    continue
             except (re.error, KeyError):
                 continue
+            # A skip counts as shadowing. It used to be skipped over, which made this check blind to the one
+            # thing it exists to catch - `_governing_rules` walks skip rules too, first-match-wins, so a skip
+            # that matches a chain bone leaves it untyped while this check (and the per-family report) called it
+            # typed. Unreachable with the shipped table (the leading `_Handle$` cannot match a chain bone), which
+            # is exactly why it went unnoticed (code review, handoff 9ai).
+            if candidate.get("skip"):
+                shadowed.append("%s is skipped by %s" % (bone, candidate.get("pattern")))
+                break
+            if candidate is not rule:
+                shadowed.append("%s is claimed by %s" % (bone, candidate.get("pattern")))
+            break
     trace.check("every family the setup typed is the rule that decides it", not shadowed,
                 "%d shadowed%s" % (len(shadowed), (": " + "; ".join(shadowed[:3])) if shadowed else ""))
     return final, report
@@ -1384,7 +1433,11 @@ def sync_preset(self, context):
     self.Preset_Chosen = True        # a choice, so autodetection must not overrule it later in `execute`
     try:
         rules, options, _source, presets = preset_table(self, context)
-    except Exception:  # noqa: BLE001 - a dialog must not raise
+    except Exception as error:  # noqa: BLE001 - a dialog must not raise
+        # Silent here means "picking a preset did nothing, and nothing anywhere says why" - the symptom class of
+        # the empty-panel bug (handoff 9ag). The dialog stays up; the reason goes to the console.
+        print("[rigify_chains] picking preset '%s' failed (%s: %s); the rows keep what they had"
+              % (self.Preset, type(error).__name__, error))
         return
     modes, table_modes, label = family_defaults(rules, presets, self.Preset, self.Families)
     self.Populating = True
@@ -1526,6 +1579,15 @@ class RigifyChainPresetSave(bpy.types.Operator):
             self.report({'ERROR'}, "Nothing to save: every family is Off.")
             return {'CANCELLED'}
         existing = preset_files().get(self.Name)
+        # ...and the *file* that name would be written to, which is not the same question: `preset_filename`
+        # sanitises a key, so `1004 00`, `1004-00` and `1004_00` all land on `1004_00.json`. The guard used to
+        # be keyed on the key alone, so saving `1004 00` next to a `1004_00` destroyed the other preset and -
+        # because the guard saw no conflict - wrote no `replaced` copy either (code review, handoff 9ai).
+        target = os.path.join(preset_dir(), preset_filename(self.Name) + ".json")
+        if os.path.exists(target) and not self.Overwrite:
+            self.report({'ERROR'}, "The name '%s' is saved as %s, which already exists. Tick Overwrite, or save "
+                                   "under another name." % (self.Name, os.path.basename(target)))
+            return {'CANCELLED'}
         if existing is not None and not self.Overwrite:
             self.report({'ERROR'}, "A preset called '%s' already exists (%s). Tick Overwrite, or save under "
                                    "another name." % (self.Name, existing.get("source") or "no source"))
@@ -1881,10 +1943,10 @@ class RigifyChains(bpy.types.Operator):
 
         The question asked here is the one that cannot be fooled by a file holding several characters: **how many
         of this run's chain roots are on it**. Measured on that two-character file: the right rig carries 44 of
-        44, the other character's 21 of 44. A tie goes to the later object, which on a re-run is the rig this run
-        made. `preferred` (the rig the run watched appear, by name - MMR renames it afterwards, so the name is
-        only a hint) wins an exact tie. Any ambiguity, and any candidate set that carries nothing, goes to the
-        trace rather than being guessed at silently.
+        44, the other character's 21 of 44. On an exact tie the first candidate in `bpy.data.objects` order wins,
+        unless the rig this run watched appear (`preferred`) is one of the tied ones - the earlier rig may be the
+        one the model is already wired to, so displacing it needs the run to know better. A tie is reported, and
+        so is a candidate set that carries nothing, rather than either being guessed at silently.
         """
         roots = [root for root in roots or [] if root]
         candidates = cls._generated_rig_candidates(model)
@@ -1897,16 +1959,25 @@ class RigifyChains(bpy.types.Operator):
 
         if not roots:
             return candidates[0]
-        best, best_hits = None, -1
-        for obj in candidates:                      # creation order: a later rig wins an exact tie
+        best, best_hits, tied = None, -1, 0
+        for obj in candidates:
+            # `bpy.data.objects` order is creation order, and on an exact tie the **first** candidate wins
+            # unless it is `preferred` that is tied: the earlier rig is the one the model may already be wired
+            # to, so displacing it needs the run to know better (`preferred` is the rig this run generated, and
+            # is None on a `Wire only` run). The comment here used to claim the opposite of what the code does
+            # (code review, handoff 9ai).
             score = hits(obj)
+            if score == best_hits:
+                tied += 1
             if score > best_hits or (score == best_hits and preferred and obj.name == preferred):
                 best, best_hits = obj, score
         if trace is not None:
             if len(candidates) > 1:
                 trace.info("%d generated rig(s) in this file; wiring to %s, which carries %d of these %d chain "
-                           "roots (%s)" % (len(candidates), best.name, best_hits, len(roots),
-                                           ", ".join("%s %d" % (obj.name, hits(obj)) for obj in candidates[:4])))
+                           "roots (%s)%s"
+                           % (len(candidates), best.name, best_hits, len(roots),
+                              ", ".join("%s %d" % (obj.name, hits(obj)) for obj in candidates[:4]),
+                              "; %d tied and the first was kept" % tied if tied else ""))
             if best_hits == 0:
                 trace.check("the rig to wire is the one with these chains", False,
                             "none of the %d generated rig(s) in this file carries any of them (%s)"
@@ -2331,8 +2402,12 @@ class RigifyChains(bpy.types.Operator):
         """Create the chain bones in the metarig, type the chain roots and file them into collections."""
         space = self._space_between(model, metarig)
         rigid = space.to_3x3().normalized()
-        connect = bool(options.get("connect_chain", True))
-        resample = str(options.get("resample", "keep")).lower()
+        # Run-wide defaults. A rule may override either one: the resolver copies `resample` and `connect_chain`
+        # from a table rule into the resolved rule, and until this build nothing ever read them back, so a
+        # per-family setting in the rules file was a silent no-op (code review, handoff 9ai). `resample: template`
+        # per rule is the agreed shape for per-character joint lengths (handoff 9i), so the keys are honoured now.
+        connect_default = bool(options.get("connect_chain", True))
+        resample_default = str(options.get("resample", "keep")).lower()
         added = 0
         typed = 0
         resampled = []
@@ -2363,6 +2438,9 @@ class RigifyChains(bpy.types.Operator):
                 if all(name in edit_bones for name in names):
                     trace.info("chain already in the metarig, left alone: %s" % names[0])
                     continue
+                # per-rule override, falling back to the run-wide options
+                connect = bool(rule.get("connect_chain", connect_default))
+                resample = str(rule.get("resample", resample_default)).lower()
                 created_here = []
                 for index, name in enumerate(names):
                     if name in edit_bones or name not in geometry:
@@ -2637,7 +2715,12 @@ class RigifyChains(bpy.types.Operator):
         previous_mode = previous_active.mode if previous_active is not None else 'OBJECT'
         released = []
         relinked = []
+        # `not_connected` holds bare bone names, because that is how `_wire_model_to_chains` tests membership;
+        # `not_connected_notes` holds the same joints with their gap for the trace. They used to be one list of
+        # formatted strings, so `name not in unconnected_joints` could never be true and a bbone chain child at a
+        # gapped joint always took the rotation-only path its own comment says it must not (code review, 9ai).
         not_connected = []
+        not_connected_notes = []
         linked_ok = []
         for obj in bpy.context.selected_objects:
             obj.select_set(False)
@@ -2667,7 +2750,8 @@ class RigifyChains(bpy.types.Operator):
                         if gap > 1e-4:
                             # a chain whose joints are not touching would jump when connected, so it stays
                             # as it is and the children are driven by position as well
-                            not_connected.append("%s (%.4f m gap)" % (bone.name, gap))
+                            not_connected.append(bone.name)
+                            not_connected_notes.append("%s (%.4f m gap)" % (bone.name, gap))
                             bone.parent = previous
                             continue
                         bone.parent = previous
@@ -2693,7 +2777,8 @@ class RigifyChains(bpy.types.Operator):
                        % (len(released), ", ".join(released[:3])))
         if keep_links:
             trace.info("chain links re-parented: %d connected, %d left unconnected (no touching joints: %s)"
-                       % (len(linked_ok), len(not_connected), ", ".join(not_connected[:3]) or "none"))
+                       % (len(linked_ok), len(not_connected),
+                          ", ".join(not_connected_notes[:3]) or "none"))
         return released, not_connected
 
     def _wire_model_to_chains(self, model, rig, chains, trace, release_parents=True, resample="keep",
@@ -3012,7 +3097,11 @@ class RigifyChains(bpy.types.Operator):
         skipped = {}
         for bone in model.data.bones:
             name = bone.name
-            if name.endswith("_Handle") or not name.startswith(("Sp_", "Tp_", "Ex_")):
+            # the same prefix tuple `physics_families` uses, `Ear` included: without it an `Ear_*` family that ends
+            # up with no rule (or whose chain the weight filter drops) could never appear here, and the run would
+            # print "every physics family in this model got a rule" while contradicting its own other lines
+            # (code review, handoff 9ai)
+            if name.endswith("_Handle") or not name.startswith(("Sp_", "Tp_", "Ex_", "Ear")):
                 continue
             if profile_family_of(name) in typed:
                 continue
@@ -3133,6 +3222,18 @@ class RigifyChains(bpy.types.Operator):
         self._refresh_families(context, trace)
         rules, options, source, presets = preset_table(self, context)
         model, _meshes = self._find_model_armature(context, trace)
+        # The dialog *states* a detected step, so it has to be the step the run takes: "Step: Wire only - ...
+        # this is the state a run that stopped before wiring leaves behind" printed above a field reading `Full`
+        # is a panel promising something it will not do (code review, handoff 9ai). The field stays editable -
+        # this only sets its opening value, and a script that passes `Step=` is untouched because it never
+        # reaches `invoke`.
+        if model is not None:
+            try:
+                detected, why = detect_step(model)
+                self.Step = detected
+                trace.info("step detected from the scene: %s - %s" % (detected, why))
+            except Exception as error:  # noqa: BLE001 - a panel must never raise
+                trace.info("step could not be detected (%s)" % error)
         if model is not None and not self.Preset_Chosen:
             key, why = detect_preset(presets, model, trace)
             if key:
@@ -3197,7 +3298,12 @@ class RigifyChains(bpy.types.Operator):
         # rather than the operator. `draw` runs on every redraw while the dialog is open, so both fixes live
         # here - fill the rows from the preset if it changed, then adopt any group row the user moved.
         sync_preset(self, context)
-        if self.Mode != 'ADVANCED' and adopt_group_edits(self):
+        if self.Mode != 'ADVANCED':
+            # adopt first (a group row the user moved wins), then mirror the family rows back into the group
+            # rows - unconditionally, so a family edited in Advanced cannot leave a Simple row showing a stale
+            # answer. `sync_group_fields` only writes the group properties and the snapshot, never the families,
+            # so this cannot flatten a per-family choice (code review, handoff 9ai).
+            adopt_group_edits(self)
             sync_group_fields(self)
         top = column.row(align=True)
         top.prop(self, "Mode", expand=True)
@@ -3328,6 +3434,12 @@ class RigifyChains(bpy.types.Operator):
                     % (model.name, len(model.data.bones), ", ".join(meshes) or "none"))
 
         rules, options, source = load_rules(bpy.path.abspath(self.Rules_File) if self.Rules_File else None)
+        # `load_rules` hands back the *cached* options dict, and the two lines below write into it - so without
+        # this copy they were editing module-level state for the rest of the Blender session. Measured
+        # consequence (code review, handoff 9ai): run once with `Resample = Even out joints`, set it back to
+        # `From rules file` (whose whole job is to read `options["resample"]`, i.e. to write nothing), run again
+        # - and the second run resamples `even` while the field and the trace say otherwise.
+        options = dict(options)
         # a rules file from an older build still holds the presets inside it: move them to their own files once,
         # here rather than in the panel (this writes files)
         ensure_preset_files(trace)
