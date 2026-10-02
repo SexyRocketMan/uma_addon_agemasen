@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "uma_addon"
-version = "2.9.0"
+version = "2.10.0"
 name = "UMA Addon (Agemasen build)"
 tagline = "UmaViewer model workflow, Agemasen build (Blender 4.2-5.2)"
 maintainer = "小微在线上"

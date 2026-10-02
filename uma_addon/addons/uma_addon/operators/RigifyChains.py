@@ -521,12 +521,23 @@ def load_rules(path=None, force=False):
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
-            loaded = [rule for rule in data.get("rules", []) if rule.get("pattern")]
+            # A JSON file can be valid and still be the wrong *shape*: `[]`, `"text"` or `{"rules": {}}` all parse,
+            # and `data.get("rules", [])` on them either raises AttributeError or yields something that is not a
+            # list of rules. That used to take the whole dialog down with no message - `_refresh_families` calls
+            # this from `invoke`, so the panel never opened (found by the beta code review, handoff 9aq). A file
+            # that is not an object is reported and ignored, exactly like a file that will not parse.
+            if not isinstance(data, dict):
+                print("[rigify_chains] %s is not a JSON object (it is %s); using the built-in rules"
+                      % (path, type(data).__name__))
+                data = {}
+            loaded = [rule for rule in (data.get("rules") or []) if isinstance(rule, dict) and rule.get("pattern")]
             if loaded:
                 rules = loaded
-                options.update(data.get("options") or {})
+                extra = data.get("options")
+                if isinstance(extra, dict):
+                    options.update(extra)
                 source = path
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, AttributeError, TypeError) as error:
             print("[rigify_chains] could not read %s (%s); using the built-in rules" % (path, error))
     if rules is None:
         rules = [dict(rule) for rule in DEFAULT_RULES["rules"]]
@@ -757,7 +768,13 @@ def save_preset(key, entry):
 
 
 def legacy_presets(data):
-    """The `profiles` / `presets` sections of a rules file, as `{key: entry}`. May be empty."""
+    """The `profiles` / `presets` sections of a rules file, as `{key: entry}`. May be empty.
+
+    Guards the shape of `data` as well as of its sections: a rules file that parses to a list or a string used to
+    reach `data.get` and raise from `execute` (found by the beta code review, handoff 9aq).
+    """
+    if not isinstance(data, dict):
+        return {}
     legacy = data.get("presets") or data.get("profiles") or {}
     if not isinstance(legacy, dict):
         legacy = {}
@@ -1207,13 +1224,18 @@ def resolve_rule_modes(model, rules, family_modes, table_modes, fixed, never, tr
         if base_rule is not None:
             for key in ("parent", "parameters", "chain_deform", "resample", "connect_chain"):
                 if key in base_rule:
-                    rule[key] = base_rule[key]
+                    # `parameters` is the one value here that is a *dict*, and `load_rules` caches the table for
+                    # the session: copying it by reference meant line 1241's `setdefault("make_widget", ...)`
+                    # edited the cached table (and `DEFAULT_RULES` itself) for the rest of the session. Benign
+                    # today - only `basic.super_copy` reads that key - but it is the same class of bug as the
+                    # options dict the code review caught in chains-35 (handoff 9aq).
+                    rule[key] = dict(base_rule[key]) if isinstance(base_rule[key], dict) else base_rule[key]
         elif not mode and (unmatched or {}).get("type"):
             # a family the fallback typed keeps the rest of the fallback's settings (a stricter `min_bones`,
             # parameters of its own), because there is no table rule to inherit from
             for key in ("parent", "parameters", "chain_deform", "resample", "connect_chain", "min_bones"):
                 if key in unmatched:
-                    rule[key] = unmatched[key]
+                    rule[key] = dict(unmatched[key]) if isinstance(unmatched[key], dict) else unmatched[key]
         if any(family.startswith(("Sp_He_", "Tp_He_", "Ear")) for family in families_here):
             rule.setdefault("parent", "Head")
         # Everything else the table does not name hangs off the nearest metarig bone to its model parent, the
@@ -1418,7 +1440,7 @@ def preset_table(self, context):
     return rules, options, source, presets
 
 
-def family_defaults(rules, presets, preset_key, families, identity=None, cross_costume="hair"):
+def family_defaults(rules, presets, preset_key, families, identity=None, cross_costume="hair", unmatched=None):
     """What each family should start as: the preset's answer, else the rules table's, else Off.
 
     Returns `(modes, table_modes, source_label)`.
@@ -1431,6 +1453,13 @@ def family_defaults(rules, presets, preset_key, families, identity=None, cross_c
 
     A preset cannot name a family that did not exist when it was made, so anything it does not name falls back
     to the table - stated in the trace rather than guessed at silently.
+
+    `unmatched` is `options.unmatched_families`, and it belongs here for one reason: without it the *panel* lied.
+    A family no typed rule names was reported as `none` while the run typed it `basic.super_copy` through that
+    fallback - 778 families / 3,521 bones across the 125-model fleet, which is the feature's own promise ("the
+    fields decide") being false for a third of what it rigs, and the trace counting them as "left at the rules
+    table's own answer". Measured by the beta code review (handoff 9aq) and cheap to get right: the fallback *is*
+    the table's answer, so it seeds `table_modes` and the row reads it as `default` rather than as an override.
 
     `identity` is the model's own `Chara_<id>_<costume>` key, and `cross_costume` says what a preset *keyed for a
     different costume* may decide (`options.preset_cross_costume`):
@@ -1454,7 +1483,16 @@ def family_defaults(rules, presets, preset_key, families, identity=None, cross_c
                     break
             except re.error:
                 continue
-    modes = {item.family: table_modes.get(item.family, MODE_OFF) for item in families}
+    fallback_mode = TYPE_MODES.get((unmatched or {}).get("type"))
+    modes = {}
+    for item in families:
+        mode = table_modes.get(item.family, MODE_OFF)
+        if item.family not in table_modes and fallback_mode:
+            # the fallback is the rules table's answer for this family (see the docstring): the row has to show
+            # what the run will do, or the panel and the trace contradict the rig
+            mode = fallback_mode
+            table_modes[item.family] = fallback_mode
+        modes[item.family] = mode
     if preset_key in (None, PRESET_DEFAULT, PRESET_CUSTOM):
         return modes, table_modes, "the rules table"
     entry = presets.get(preset_key)
@@ -1565,7 +1603,8 @@ def sync_preset(self, context):
     model_for_identity, _meshes = self._find_model_armature(context, Trace(False))
     identity, _bone = model_identity(model_for_identity) if model_for_identity is not None else (None, None)
     modes, table_modes, label = family_defaults(rules, presets, self.Preset, self.Families, identity,
-                                                str(options.get("preset_cross_costume", "hair")).lower())
+                                                str(options.get("preset_cross_costume", "hair")).lower(),
+                                                options.get("unmatched_families") or {})
     self.Populating = True
     try:
         for item in self.Families:
@@ -1577,8 +1616,9 @@ def sync_preset(self, context):
         # A preset that gives one group more than one answer cannot be shown as a group row at all: Simple mode
         # has a single dropdown per group, so leaving it selected would invite the user to flatten the character
         # with one click - which is exactly what Maruzensky's rig (Hair0 a stub, Hair2 and Hair4 chains) would
-        # lose. Switch to the mode that can show it, and say so in the panel.
-        mixed = mixed_groups(self)
+        # lose. Switch to the mode that can show it, and say so in the panel. The fallback type is excluded from
+        # that test on purpose: it is not an answer anybody chose (`mixed_groups`).
+        mixed = mixed_groups(self, TYPE_MODES.get((options.get("unmatched_families") or {}).get("type")))
         self.Forced_Advanced = ", ".join(mixed)
         if mixed:
             self.Mode = 'ADVANCED'
@@ -1616,8 +1656,11 @@ def detect_step(model, trace=None):
     * a generated rig carrying our chain roots, and the model's chain bones with no `UMA_chain_*` constraint on
       them -> this is the state a run that died before wiring leaves behind, which is exactly what `Wire only`
       exists for;
-    * everything already wired -> `Full`, because re-running it is the honest "do it again properly" and
-      `Wire only` would just re-attach to whatever is there.
+    * everything already wired -> `Wire only`, which for that state means "there is nothing to generate or
+      attach; re-apply the display". It used to answer `Full` on the reasoning that "a Full run redoes it from
+      scratch" - it does not: the chains were released by the run that wired them, so a second Full run finds 33
+      chains where the first found 44 and fails 17 attachment checks (measured, handoff 9aq). `Full` on that state
+      is now refused in `execute` rather than silently degrading the model.
     """
     rig = RigifyChains._find_rig_for_chains(model, [bone.name for bone in model.data.bones
                                                     if bone.name.startswith(("Sp_", "Tp_", "Ear"))
@@ -1643,24 +1686,34 @@ def detect_step(model, trace=None):
     wired = [bone.name for bone in model.pose.bones
              if any(c.name.startswith("UMA_chain") for c in bone.constraints)]
     if wired:
-        return 'FULL', ("%d chain(s) already wired to %s - a Full run redoes it from scratch; Wire only would "
-                        "re-attach to what is there" % (len(wired), rig.name))
+        # A wired model is *not* a Full run's business. `Full` regenerates from the model, and this model's chain
+        # bones were released by the run that wired them, so chain discovery would find 33 chains where the first
+        # run found 44 and fail 17 attachment checks - measured with `double_run_check.py` (handoff 9aq). The safe
+        # answer is `Wire only`, which now means "re-attach nothing, re-apply the display".
+        return 'WIRE', ("%d chain(s) already follow %s, so nothing needs generating: `Wire only` re-applies the "
+                        "wiring and the display, and a Full run would rebuild only part of the rig (measured: 33 "
+                        "chains instead of 44, 17 failed checks)" % (len(wired), rig.name))
     return 'WIRE', ("%s already carries %d of this model's chains and nothing is wired to them yet, so this is "
                     "the state a run that stopped before wiring leaves behind" % (rig.name, len(generated)))
 
 
-def mixed_groups(operator):
+def mixed_groups(operator, fallback_mode=None):
     """Groups that hold **more than one real rig type** - a single dropdown cannot show those.
 
-    `Off` does not count as an answer. A family with no rule at all is Off because nothing names it, and a group
-    where the only difference is "one of these has no rule" is perfectly expressible as one answer: reporting
-    `Extras (2 different answers across 2 families)` for `Ribbon0` a spline and `Ribbon1` untouched was noise,
-    and it buried the group that really is mixed (`Hair`, where `Hair0` is a stub next to two chains).
+    What does not count as an answer: `Off`, and the `unmatched_families` fallback type. A family no rule names
+    used to be `Off` because nothing named it; it is not Off, it gets `basic.super_copy` from the fallback, and the
+    rows now say so (see `family_defaults`). For *this* test it is left out all the same, because a group whose
+    only difference is "some of these families fall back to a stub" is still expressible as one answer - and
+    counting it would open the dialog on Advanced for nearly every model, since most costumes have one accessory
+    family the table never learned. Reporting `Extras (2 different answers across 2 families)` for `Ribbon0` a
+    spline and `Ribbon1` a fallback stub was tried and was noise; it buried the group that really is mixed
+    (`Hair`, where `Hair2` is a tail and `Hair4` a spline).
     """
     mixed = []
     for group in SIMPLE_GROUPS:
         members = [item.mode for item in operator.Families
-                   if item.group == group and not item.fixed and item.mode != MODE_OFF]
+                   if item.group == group and not item.fixed and item.mode != MODE_OFF
+                   and item.mode != fallback_mode]
         if len(set(members)) > 1:
             mixed.append(group)
     return mixed
@@ -2836,8 +2889,20 @@ class RigifyChains(bpy.types.Operator):
                 if self._looks_like_metarig(metarig, self._model):
                     trace.check("metarig recognised", True, "%s (%d bones)"
                                 % (metarig.name, len(metarig.data.bones)))
-                    added, typed, collections = self._add_chains_to_metarig(
-                        self._model, metarig, self._chains, self._options, trace, self._geometry)
+                    try:
+                        added, typed, collections = self._add_chains_to_metarig(
+                            self._model, metarig, self._chains, self._options, trace, self._geometry)
+                    except Exception as error:  # noqa: BLE001
+                        # rigify's Generate operator catches whatever this raises and still reports FINISHED
+                        # (`rigify/ui.py`), so without this the traceback vanished and the run blamed "rigify never
+                        # called generate_rig" - which is the opposite of what happened, and sent the reader
+                        # looking in the wrong place (beta code review, handoff 9aq). The insertion's own record is
+                        # what `execute` reports from, so keep the real reason and the stack.
+                        import traceback
+                        state["error"] = "%s: %s" % (type(error).__name__, error)
+                        trace.check("the chains were inserted into the metarig", False, state["error"])
+                        trace.info(traceback.format_exc())
+                        raise
                     state["chains"] = len(self._chains)
                     state["added"] = added
                     state["collections"] = collections
@@ -3374,7 +3439,8 @@ class RigifyChains(bpy.types.Operator):
                 item.fixed = fixed.get(family, "")
             modes, table_modes, label = family_defaults(
                 rules, presets, self.Preset, self.Families, identity,
-                str(options.get("preset_cross_costume", "hair")).lower())
+                str(options.get("preset_cross_costume", "hair")).lower(),
+                options.get("unmatched_families") or {})
             for item in self.Families:
                 # a fixed family shows its type and is locked; everything else starts from the preset / table, or
                 # from what this run already had for that family
@@ -3400,7 +3466,7 @@ class RigifyChains(bpy.types.Operator):
             # A preset whose families disagree inside one group cannot be shown by a single group dropdown, so
             # the panel opens on Advanced - otherwise the first click on a group row would flatten a character
             # that is deliberately mixed (Maruzensky: Hair0 a stub, Hair2 and Hair4 chains).
-            mixed = mixed_groups(self)
+            mixed = mixed_groups(self, TYPE_MODES.get((options.get("unmatched_families") or {}).get("type")))
             self.Forced_Advanced = ", ".join(mixed)
             if mixed:
                 self.Mode = 'ADVANCED'
@@ -3538,6 +3604,9 @@ class RigifyChains(bpy.types.Operator):
         preset = column.row(align=True)
         preset.prop(self, "Preset", text="")
         folder = preset.row(align=True)
+        # `EXEC_DEFAULT`: this button carries its action, so it must run it rather than open the operator's own
+        # dialog - which it would do now that `RigifyChainRules` has an `invoke` for the panel button's sake
+        folder.operator_context = 'EXEC_DEFAULT'
         props = folder.operator(RigifyChainRules.bl_idname, text="", icon='FILE_FOLDER')
         props.Action = 'SHOW'
         preset_search = column.row(align=True)
@@ -3653,6 +3722,100 @@ class RigifyChains(bpy.types.Operator):
 
     # --------------------------------------------------------------------------------------------------
 
+    def _apply_display(self, rig, chain_names, trace):
+        """The display half of a run: the style, then the X-ray row. Returns `(ok, detail, x_ray)`.
+
+        Split out of `execute` so a run that has nothing left to *rig* can still do this - which is what makes
+        `Step = Wire only` on an already-wired model useful instead of an error (`_finish_display_only`). A style
+        is display only and idempotent: applying it twice changes nothing, which is the promise the README makes.
+        """
+        style_entry = read_style(self.Style)
+        if style_entry is None and self.Style != STYLE_NONE:
+            trace.info("style '%s' is not in %s, so the rig keeps rigify's own display"
+                       % (self.Style, style_dir()))
+        detail = "no style chosen, so the rig keeps rigify's own display"
+        ok = True
+        if style_entry is not None:
+            try:
+                applied = apply_style(rig, style_entry, chain_names=chain_names, trace=trace)
+                detail = ("%s: %d control(s) coloured, %d of them chain families, %d left as rigify made them, "
+                          "%s" % (style_entry.get("key"), applied["coloured"], applied["chain_coloured"],
+                                  applied["left_as_rigify_made_it"], " ".join(applied["flags"][:4])))
+                for warning in applied["warnings"]:
+                    trace.info("style warning: %s" % warning)
+                trace.info("display style: %s" % describe_style(style_entry))
+                # a style that was chosen and then could not be applied is a failure, not a silent success: this
+                # check used to pass whenever `apply_style` did not raise, while per-bone failures are collected as
+                # warnings *inside* it (beta code review, handoff 9aq)
+                if applied["warnings"] and not applied["coloured"]:
+                    ok = False
+                    detail += " | nothing could be applied: %s" % applied["warnings"][0]
+                elif not applied["coloured"] and (style_entry.get("colors") or []):
+                    ok = False
+                    detail += (" | the style has %d colour rule(s) and none of them matched a bone"
+                               % len(style_entry.get("colors") or []))
+            except Exception as error:  # noqa: BLE001 - a rig that is right but plain beats no rig
+                import traceback
+                ok = False
+                detail = "%s" % error
+                trace.info(traceback.format_exc())
+
+        # The one display flag a style cannot scope: X-ray. `show_in_front` is an **Object** property (no `Bone`,
+        # `PoseBone` or `BoneCollection` has one - read off the 5.2 RNA) and the armature's draw code reads a
+        # custom-shape object only for its *mesh data*, never for the widget's own `show_in_front`, so the rig is
+        # drawn through the model as a whole or not at all. The row exists because a manual flip in Blender's
+        # Object Properties > Viewport Display > In Front does not survive the next run, which re-applies the style.
+        if self.Xray in ('ON', 'OFF'):
+            wanted = self.Xray == 'ON'
+            before = bool(rig.show_in_front)
+            rig.show_in_front = wanted
+            turned = ("on: the rig is drawn through the model" if wanted
+                      else "off: the model hides the rig again")
+            detail += " | x-ray %s (was %s, %s)" % (
+                turned, "on" if before else "off",
+                "the style's value overridden" if style_entry is not None else "rigify's own value")
+            trace.info("x-ray %s - the whole rig or nothing: Blender has no per-bone or per-family X-ray, and %s"
+                       % (turned, "the style also says %s" % wanted if style_entry is not None
+                          else "no style is in use"))
+        return ok, detail, bool(rig.show_in_front)
+
+    def _already_wired(self, model):
+        """`(wired bone names, rig)` when this model's chains are already released and following its own rig.
+
+        This is the state a *finished* run leaves behind, and it is what a second run must not walk into blind:
+        `_wire_model_to_chains` releases every chain bone from its model parent on purpose (so the chain follows
+        the rig instead of MMR's hierarchy), and chain discovery works by walking that hierarchy. So on the next
+        run the released bones look like single-bone chains with no model parent - below `min_bones`, so dropped -
+        and the survivors are attached by the nearest-bone fallback and fail the attachment check. Measured on
+        `meisho_doto_dot_o_lantern` with `double_run_check.py`: run 1 finds 44 chains and fails nothing, run 2 finds
+        **33 chains and fails 17 attachment checks**. The handoff had recorded those numbers already (9aj), and the
+        panel then recommended repeating it, because `detect_step` answered `Full` for a wired model with the
+        reasoning "a Full run redoes it from scratch". It does not (beta code review, handoff 9aq).
+        """
+        names = [bone.name for bone in model.data.bones
+                 if bone.name.startswith(("Sp_", "Tp_", "Ear")) and not bone.name.endswith("_Handle")]
+        rig = self._find_rig_for_chains(model, names, Trace(False))
+        if rig is None:
+            return None, None
+        wired = [pose_bone.name for pose_bone in model.pose.bones
+                 if any(constraint.name.startswith("UMA_chain") for constraint in pose_bone.constraints)]
+        return (wired or None), rig
+
+    def _finish_display_only(self, model, rig, trace, started, mark, chain_names):
+        """End a run that had nothing left to rig, having done the display and said so."""
+        ok, detail, x_ray = self._apply_display(rig, chain_names, trace)
+        trace.check("the rig carries this run's display style", ok, detail)
+        mark("the display")
+        trace.info("timings: total %.1fs (nothing was generated or wired)" % (time.time() - started))
+        trace.info("rig display: x-ray %s" % ("on (drawn through the model)" if x_ray else "off"))
+        text_name = trace.save()
+        self.report({'INFO'}, "[%s] %s is already rigged - nothing to generate or attach, so the display was "
+                              "re-applied. Use Ctrl+Z or re-import the model to rig it again from scratch. "
+                              "Trace: %s" % (BUILD_TAG, model.name, text_name))
+        return {'FINISHED'}
+
+    # --------------------------------------------------------------------------------------------------
+
     def execute(self, context):
         trace = Trace(self.Debug)
         trace.step("Pumpkin rig setup %s, step=%s" % (BUILD_TAG, self.Step))
@@ -3685,6 +3848,31 @@ class RigifyChains(bpy.types.Operator):
                                             if o.type == 'MESH' and o.name in meshes]
         trace.check("model armature", True, "%s (%d bones), meshes: %s"
                     % (model.name, len(model.data.bones), ", ".join(meshes) or "none"))
+
+        # ---- a model that is already rigged cannot be rigged again ---------------------------------------
+        # Refused here, before anything is touched, because a `Full` run on this state does not fail loudly - it
+        # *succeeds* with a worse rig: measured, 33 chains instead of 44 and 17 failed attachment checks, with the
+        # first rig still in the file and the model's old constraints still on it (`_already_wired` has the detail
+        # and the numbers). The panel used to recommend exactly that, so the guard is what makes pressing the
+        # button twice safe. `Wire only` is allowed through: it has nothing to wire, and `execute` turns that into
+        # the display-only pass instead of an error.
+        wired_bones, wired_rig = self._already_wired(model)
+        if wired_bones and self.Step == 'FULL':
+            trace.check("this model can still be rigged", False,
+                        "%s is already rigged: %d of its chain bones are released and follow %s, and a Full run "
+                        "would rebuild only part of the rig (measured: 33 chains instead of 44 and 17 failed "
+                        "attachment checks). Use Step = Wire only to re-apply the wiring and the display, or "
+                        "Ctrl+Z / re-import the model to rig it again from scratch"
+                        % (model.name, len(wired_bones), wired_rig.name))
+            text_name = trace.save()
+            self.report({'ERROR'}, "[%s] %s is already rigged (its chain bones follow %s). Nothing was changed: a "
+                                   "Full run here would produce a worse rig. Use Step = 'Wire only' to re-apply "
+                                   "the wiring and the display, or Ctrl+Z / re-import the model. Trace: %s"
+                        % (BUILD_TAG, model.name, wired_rig.name, text_name))
+            return {'CANCELLED'}
+        if wired_bones:
+            trace.info("%s is already rigged: %d chain bone(s) follow %s, so this run has nothing to generate or "
+                       "attach and will re-apply the display only" % (model.name, len(wired_bones), wired_rig.name))
 
         rules, options, source = load_rules(bpy.path.abspath(self.Rules_File) if self.Rules_File else None)
         # `load_rules` hands back the *cached* options dict, and the two lines below write into it - so without
@@ -3766,6 +3954,18 @@ class RigifyChains(bpy.types.Operator):
         trace.check("chains found in the model", bool(chains), "%d chains" % len(chains))
         mark("find the model, rules, families and chains")
         self._report_coverage(model, rules, chains, trace)
+        if not chains and wired_bones:
+            # The second way this state is reached: `Wire only` on a model that is already wired. Its chains were
+            # released by the run that wired them (they are parentless by design, so they follow the rig instead of
+            # MMR's hierarchy), so there is nothing left for chain discovery to walk - and the honest answer is not
+            # "no chains matched the rules file" but "there is nothing to wire". What a re-run *can* still usefully
+            # do is the display, which is the one part of a run that touches nothing: so that is what happens, and
+            # the user gets a styled rig instead of an error for pressing the button twice. See `_already_wired`.
+            trace.info("%s is already wired to %s: %d of its chain bones follow ORG copies, and nothing is left "
+                       "to generate or attach" % (model.name, wired_rig.name, len(wired_bones)))
+            trace.step("nothing to wire: re-applying the display only")
+            return self._finish_display_only(model, wired_rig, trace, started, mark,
+                                             [name for name in wired_bones])
         if not chains:
             self.report({'ERROR'}, "[%s] No chains matched the rules file - nothing to add." % BUILD_TAG)
             return {'CANCELLED'}
@@ -4003,63 +4203,8 @@ class RigifyChains(bpy.types.Operator):
                               "visible now, switch it off in the armature's collection list"))
 
         # ---- how the rig is drawn: the display style, last, because it is the only thing that touches nothing --
-        # A style is display only (colours, widget sizes, the armature's flags) and idempotent, so it runs after
-        # everything that decides what the rig *is*: a run can be repeated on an already-styled rig and the
-        # second pass changes nothing.
-        style_entry = read_style(self.Style)
-        if style_entry is None and self.Style != STYLE_NONE:
-            trace.info("style '%s' is not in %s, so the rig keeps rigify's own display"
-                       % (self.Style, style_dir()))
-        style_detail = "no style chosen, so the rig keeps rigify's own display"
-        style_applied = True
-        if style_entry is not None:
-            try:
-                applied = apply_style(rig, style_entry, chain_names=[name for _rule, names in chains
-                                                                     for name in names], trace=trace)
-                style_detail = ("%s: %d control(s) coloured, %d of them chain families, %d left as rigify made "
-                                "them, %s" % (style_entry.get("key"), applied["coloured"],
-                                              applied["chain_coloured"], applied["left_as_rigify_made_it"],
-                                              " ".join(applied["flags"][:4])))
-                for warning in applied["warnings"]:
-                    trace.info("style warning: %s" % warning)
-                trace.info("display style: %s" % describe_style(style_entry))
-            except Exception as error:  # noqa: BLE001 - a rig that is right but plain beats no rig
-                import traceback
-                style_applied = False
-                style_detail = "%s" % error
-                trace.info(traceback.format_exc())
-
-        # ---- and the one display flag a style cannot scope: X-ray ------------------------------------------
-        # Asked for by the user, for the chest group at first: *"there's no way to access it with coolchou's
-        # setup... so I think we can make the chest xray"*. It cannot be done for one family, and that is a fact
-        # about Blender rather than about this operator: `show_in_front` is an **Object** property (no `Bone`,
-        # `PoseBone` or `BoneCollection` has one - measured off the 5.2 RNA), and the armature's own overlay draw
-        # code reads a custom-shape object only for its *mesh data* - `custom->type`, `empty_drawtype`,
-        # `empty_drawsize` - and positions it with the *armature's* matrix, never looking at the widget's own
-        # `show_in_front`. So the armature draws its bones through the mesh or it does not, as a whole.
-        #
-        # Which is why this row exists instead of a chest button, and why it is worth having at all: a manual
-        # flip in Blender's Object Properties > Viewport Display > In Front does not survive the next run, because
-        # the style is re-applied and puts the style's own value back. `From style` is the default, so nothing
-        # changes for anyone who does not touch this.
-        #
-        # And there is a reason to want it on: with X-ray off, most controls sit *inside* the character - measured
-        # with `chest_reach_check.py` (42 directions per control, buried = none of them escapes): 34 of 49 chest
-        # controls, 159 of 228 body controls, 39 of 58 hair, 12 of 12 tail on `1004_00`, down to 5-7 cm deep. The
-        # chest is not special; it is only the family whose occlusion the user is willing to trade away.
-        if self.Xray in ('ON', 'OFF'):
-            wanted = self.Xray == 'ON'
-            before = bool(rig.show_in_front)
-            rig.show_in_front = wanted
-            turned = ("on: the rig is drawn through the model" if wanted
-                      else "off: the model hides the rig again")
-            style_detail += " | x-ray %s (was %s, %s)" % (
-                turned, "on" if before else "off",
-                "the style's value overridden" if style_entry is not None else "rigify's own value")
-            trace.info("x-ray %s - the whole rig or nothing: Blender has no per-bone or per-family X-ray, and "
-                       "%s" % (turned, "the style also says %s" % wanted if style_entry is not None
-                               else "no style is in use"))
-        final_xray = bool(rig.show_in_front)
+        style_applied, style_detail, final_xray = self._apply_display(
+            rig, [name for _rule, names in chains for name in names], trace)
         mark("collections, UI rows and the style")
         # ---- where the time went, and what the scene looked like ------------------------------------------
         # The two facts a "this run was slow" report needs. `timings:` is this operator's own phases; the MMR
@@ -4092,8 +4237,11 @@ class RigifyChains(bpy.types.Operator):
                       len(other_armatures), ", ".join(other_armatures[:4]) or "none",
                       len(other_rigs), ", ".join(other_rigs[:4]) or "none", len(scene_meshes)))
         trace.check("the rig carries this run's display style", style_applied, style_detail)
-        trace.info("rig display: x-ray %s, %s" % ("on (drawn through the model)" if final_xray else "off", 
-                                                  describe_style(style_entry) if style_entry else "no style"))
+        # `style_detail` rather than the style entry: `read_style` and the apply both live in `_apply_display` now,
+        # and this line referred to a local that no longer exists there - which the verification run after the
+        # refactor caught immediately (NameError, handoff 9aq)
+        trace.info("rig display: x-ray %s | %s"
+                   % ("on (drawn through the model)" if final_xray else "off", style_detail))
 
         trace.step("done in %.1fs" % (time.time() - started))
         trace.info("chains %d, model bones wired %d, collections %s"
@@ -4213,12 +4361,12 @@ class RigifyChainStyleFolder(bpy.types.Operator):
 
 
 class RigifyChainRules(bpy.types.Operator):
-    """Write the default chain rules, or show where the file is"""
+    """Open the folder the rules and presets live in, or write the rules file"""
 
     bl_idname = "uma.rigify_chain_rules"
     bl_label = "Rigify Chain Rules"
-    bl_description = ("Open the folder the presets and rules live in, or write the file with the built-in "
-                      "defaults so it can be edited")
+    bl_description = ("Open the folder the presets and rules live in, write the rules file with the built-in "
+                      "defaults so it can be edited, or leave it alone")
     bl_options = {'REGISTER'}
 
     Action: EnumProperty(
@@ -4226,10 +4374,22 @@ class RigifyChainRules(bpy.types.Operator):
         items=[('SHOW', "Open The Presets Folder", "Open the folder holding one file per preset, in the "
                                                    "operating system's file browser. The rules table and the run "
                                                    "options are in rigify_chains.json one level up"),
-               ('WRITE', "Write Defaults", "Overwrite the rules file with the built-in defaults"),
+               ('WRITE', "Write Defaults", "Overwrite the rules file with the built-in defaults (a backup of the "
+                                           "file it replaces is written beside it)"),
                ('KEEP', "Write Only If Missing", "Leave an existing rules file alone")],
-        default='KEEP',
+        default='SHOW',
     )
+
+    def invoke(self, context, event):
+        """Ask, instead of acting on a default nobody can see.
+
+        The panel draws this operator with no properties at all, and `Action` used to default to `KEEP` with no
+        `invoke` - so the button could only ever take the "write it if it is missing" branch, which on any normal
+        install reports "Rules file already exists" and does nothing. The two actions that do something were
+        unreachable from the UI (the dialog's folder button sets `Action='SHOW'` explicitly, so only that path
+        worked). Now every press opens the three choices (beta code review, handoff 9aq).
+        """
+        return context.window_manager.invoke_props_dialog(self, width=340)
 
     def execute(self, context):
         path = config_path()
