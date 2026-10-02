@@ -44,6 +44,11 @@ import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, StringProperty
 from mathutils import Matrix, Vector
 
+# The rig display styles: one JSON file per style in `<config>/uma_addon/styles/`, his own style shipped as the
+# default. Display only - the data, the apply, and the capture all live in `RigStyles` (handoff 9al/9am).
+from .RigStyles import (STYLE_NONE, apply_style, capture_style, describe_style, ensure_style_files, forget_styles,
+                        find_generated_rig, read_style, style_dir, style_files, style_items)
+
 # rigify's own prefixes, used to recognise the armature it generated
 GENERATED_PREFIXES = ("ORG-", "DEF-", "MCH-")
 # Rigify types that are **not** chains: the rule is applied to every bone it governs rather than to one chain
@@ -69,8 +74,20 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # Blender keeps a loaded add-on module in memory until it is disabled/enabled or Blender restarts, so an
 # edited file on disk changes nothing until then - that is what the version report after every run is for.
 # Bump BUILD_TAG on every change, and keep it the first word of BUILD.
-BUILD_TAG = "chains-37"
-BUILD = ("chains-37: a preset saved for one costume no longer types another costume's physics. The autodetect "
+BUILD_TAG = "chains-38"
+BUILD = ("chains-38: the rig now looks like the animator's, and the last four fleet failures are named. His display "
+         "style was measured out of 14 of his own packed rigs - 7062 bones - and is now data: "
+         "`<config>/uma_addon/styles/<key>.json`, one file per style, with `coolchou.json` written on first run "
+         "and selected by default (`Style` in the panel, `Save style from this rig` to make more, README in the "
+         "folder). Display only and idempotent: it never moves a bone or a constraint. Two measurements worth "
+         "keeping: in his rigs **only controls are coloured** (every ORG-/DEF-/MCH- is left `DEFAULT`) and his "
+         "**chain controls are white** - ours came out uncoloured (`basic.super_copy`, `spines.basic_tail` and "
+         "`limbs.spline_tentacle` ship no colour set), 223 of the 451 controls on a `1004_00` rig - and his "
+         "`show_in_front` is `False` in 14 of 14 where ours was `True` because `Controller.py` sets it. Per the "
+         "user's decision the style wins: every run now turns that off on the rig it generated. Also: the live "
+         "rules file names a parent for the pantaloon chains, the one real failure left on 125 models "
+         "(`1057_00`'s `Knee_L` is 0.3418 m from the nearest metarig bone `shin.L` - a PMX-capture vs MMR-fit "
+         "discrepancy, handoff 9am). Previous: chains-37: a preset saved for one costume no longer types another costume's physics. The autodetect "
          "that picks such a preset compares the model's hair *skeleton*, so when it fires the head bone set "
          "agrees - but costumes differ in their cloth and accessories (`1001_90` has no `Sp_Hi_Ribbon0` at all), "
          "and a skeleton match says nothing about those. New data, `options.preset_cross_costume`, default "
@@ -370,6 +387,16 @@ DEFAULT_RULES = {
         # an unweighted root rather than trimming the chain to one bone.
         {"pattern": "^Sp_Ch_", "type": "spines.basic_tail", "collection": "Chest", "min_bones": 2,
          "parent": "Chest", "parameters": {"copy_rotation_axes": [True, True, True]}},
+        # `1057_00`'s knee pads, and the one real failure left on 125 models: the model names `Knee_L`/`Knee_R`
+        # as their parent, MMR's metarig has no bone there, and the nearest is `shin.L`/`shin.R` at 0.3418 m - so
+        # every run attached them there and then failed its own check, four times, honestly. Naming the metarig
+        # bone turns that guess into a decision: `shin.L` *is* MMD's calf, which is the bone a knee pad belongs
+        # to, and the trace now says "attached to shin.L by rule" instead of reporting a distance. Two rules, one
+        # per side, because a rule's `parent` is one bone and `resolve_rule_modes` resolves per *bone name*, not
+        # per family (`Sp_Kn_Pantaloons0` holds both sides); the type is what the `unmatched_families` fallback
+        # already gave these families, so the rig they produce is unchanged (handoff 9am).
+        {"pattern": "^Sp_Kn_Pantaloons\\d*_L", "type": "basic.super_copy", "parent": "shin.L"},
+        {"pattern": "^Sp_Kn_Pantaloons\\d*_R", "type": "basic.super_copy", "parent": "shin.R"},
         # he rigifies every other cloth bone as a plain follow stub; this operator leaves those to MMR, so
         # they get no control of their own (see the stub option in the docs for matching him exactly)
         {"pattern": "^Sp_", "type": "", "skip": True},
@@ -1419,8 +1446,15 @@ def family_defaults(rules, presets, preset_key, families, identity=None, cross_c
     label = "preset %s (%s, %d families, %d of them different from the table)" % (
         preset_key, entry.get("source") or "no source", len(named), changed)
     if held_back:
-        label += ("; another costume's preset, so only its hair answers were used and %d other family "
-                  "answer(s) stayed with the rules table" % len(held_back))
+        # Two different things to say, and saying the wrong one is worse than saying nothing: `exact` uses none of
+        # a cross-costume preset, `hair` uses part of it. The label is what the panel shows and what the trace
+        # keeps, so it has to describe what happened rather than share one sentence between the two.
+        if cross_costume == "exact":
+            label += ("; another costume's preset and preset_cross_costume is 'exact', so none of it was used "
+                      "and all %d family answer(s) came from the rules table" % len(held_back))
+        else:
+            label += ("; another costume's preset, so only its hair answers were used and %d other family "
+                      "answer(s) stayed with the rules table" % len(held_back))
     if unknown:
         label += "; unmapped: " + ", ".join(unknown[:3])
     return modes, table_modes, label
@@ -1880,6 +1914,18 @@ class RigifyChains(bpy.types.Operator):
     Preset_Note: StringProperty(name="Preset note", default="", options={'HIDDEN'})
     Forced_Advanced: StringProperty(name="Forced Advanced", default="", options={'HIDDEN'})
     Group_Snapshot: StringProperty(name="Last group values", default="", options={'HIDDEN'})
+    # How the rig is *drawn* (chains-38). Display only, so it is not part of a preset: a preset says what a chain
+    # is made of, a style says what it looks like, and the two are saved in different folders for that reason.
+    # The list is the styles folder; the shipped `coolchou.json` is first and is what a fresh install runs.
+    Style: EnumProperty(
+        name="Style",
+        description="How the generated rig is displayed: bone colours, widget sizes and the armature's display "
+                    "flags. 'Coolchou's rigs' is the animator's own style, measured out of 14 of his packed rigs; "
+                    "'None' leaves everything exactly as rigify made it. Display only - a style cannot change "
+                    "what the rig does, and applying one twice changes nothing the second time",
+        items=style_items,
+        default=0,
+    )
     # Simple mode's own fields, one per group. The per-family rows below are Advanced's, so the two do not
     # fight: switching to Simple overrides them while it is selected and leaves them intact (handoff 9y).
     Hair_Mode: mode_property("Hair")
@@ -3447,6 +3493,16 @@ class RigifyChains(bpy.types.Operator):
                                                       "y" if preset_mismatch(self) == 1 else "ies"))
         save = column.row()
         save.operator(RigifyChainPresetSave.bl_idname, icon='FILE_TICK').Data = self._family_data()
+        # The style row (chains-38). It sits here rather than under `More settings` for a reason the doctrine
+        # above does not cover: `More settings` is for what decides what the rig *is*, and a style decides none
+        # of it - its whole effect is visible in the viewport, so hiding it would hide the feature. The folder
+        # button is the same one the presets use one row up: one file per style, editable by hand.
+        style_row = column.row(align=True)
+        style_row.prop(self, "Style", text="")
+        style_folder = style_row.row(align=True)
+        style_folder.operator(RigifyChainStyleFolder.bl_idname, text="", icon='FILE_FOLDER').Action = 'SHOW'
+        style_save = column.row()
+        style_save.operator(RigifyChainStyleSave.bl_idname, icon='FILE_TICK')
         column.separator()
         if self.Mode == 'ADVANCED':
             current = None
@@ -3565,6 +3621,10 @@ class RigifyChains(bpy.types.Operator):
         # a rules file from an older build still holds the presets inside it: move them to their own files once,
         # here rather than in the panel (this writes files)
         ensure_preset_files(trace)
+        # and the display styles: the shipped `coolchou.json` is written here on a fresh install (never in
+        # `draw`, which runs on every redraw and must not write files) - the same shape as the presets, one
+        # file per style, and the operator works without it (a missing style leaves rigify's own display)
+        ensure_style_files(trace)
         if self.Resample in {'EVEN', 'LEAF'}:
             options["resample"] = self.Resample.lower()
         elif self.Resample == 'KEEP':
@@ -3859,6 +3919,34 @@ class RigifyChains(bpy.types.Operator):
                            % (MODEL_COLLECTION_NAME, grouped,
                               "visible now, switch it off in the armature's collection list"))
 
+        # ---- how the rig is drawn: the display style, last, because it is the only thing that touches nothing --
+        # A style is display only (colours, widget sizes, the armature's flags) and idempotent, so it runs after
+        # everything that decides what the rig *is*: a run can be repeated on an already-styled rig and the
+        # second pass changes nothing. `show_in_front = False` is the user's own decision - his rigs are not
+        # see-through and ours were, because Controller.py sets it True when it builds MMR's controller.
+        style_entry = read_style(self.Style)
+        if style_entry is None and self.Style != STYLE_NONE:
+            trace.info("style '%s' is not in %s, so the rig keeps rigify's own display"
+                       % (self.Style, style_dir()))
+        if style_entry is not None:
+            try:
+                applied = apply_style(rig, style_entry, chain_names=[name for _rule, names in chains
+                                                                     for name in names], trace=trace)
+                trace.check("the rig carries this run's display style", True,
+                            "%s: %d control(s) coloured, %d of them chain families, %d left as rigify made them, "
+                            "%s" % (style_entry.get("key"), applied["coloured"], applied["chain_coloured"],
+                                    applied["left_as_rigify_made_it"], " ".join(applied["flags"][:4])))
+                for warning in applied["warnings"]:
+                    trace.info("style warning: %s" % warning)
+                trace.info("display style: %s" % describe_style(style_entry))
+            except Exception as error:  # noqa: BLE001 - a rig that is right but plain beats no rig
+                import traceback
+                trace.check("the rig carries this run's display style", False, "%s" % error)
+                trace.info(traceback.format_exc())
+        else:
+            trace.check("the rig carries this run's display style", True,
+                        "no style chosen, so the rig keeps rigify's own display")
+
         trace.step("done in %.1fs" % (time.time() - started))
         trace.info("chains %d, model bones wired %d, collections %s"
                    % (len(chains), wired, ", ".join(present)))
@@ -3873,6 +3961,108 @@ class RigifyChains(bpy.types.Operator):
         else:
             self.report({'INFO'}, message)
         return {'FINISHED'}
+
+class RigifyChainStyleSave(bpy.types.Operator):
+    """Save how the rig in this scene is displayed as a style file"""
+
+    bl_idname = "uma.rigify_chain_style"
+    bl_label = "Save style from this rig"
+    bl_description = ("Read the display settings of the generated rig in the scene - bone colours, widget sizes, "
+                      "the armature's display flags - and write them into one small JSON file in the styles "
+                      "folder, so they can be picked again. This is also how the shipped default was captured, "
+                      "so the two cannot drift. A style is display only: nothing it saves can change what the "
+                      "rig does")
+    bl_options = {'REGISTER'}
+
+    Name: StringProperty(
+        name="Style name",
+        description="The file is named after this. An existing style is never overwritten unless Overwrite is "
+                    "ticked",
+        default="",
+    )
+    Overwrite: BoolProperty(
+        name="Overwrite an existing style",
+        description="Replace a style that is already there. Off by default, because 'coolchou' is the shipped "
+                    "default and the file name field starts empty rather than on top of it",
+        default=False,
+    )
+
+    def invoke(self, context, event):
+        if not self.Name:
+            rig = find_generated_rig(context)
+            self.Name = "my-style" if rig is None else ("%s-style" % rig.name.split("_arm")[0]).lower()
+        return context.window_manager.invoke_props_dialog(self, width=380)
+
+    def execute(self, context):
+        rig = find_generated_rig(context)
+        if rig is None:
+            self.report({'ERROR'}, "No generated rig in this scene: run the Pumpkin Rig Setup first, or select "
+                                   "the rigify rig whose display you want to save.")
+            return {'CANCELLED'}
+        if not self.Name:
+            self.report({'ERROR'}, "A style needs a name: it becomes the file name in the styles folder.")
+            return {'CANCELLED'}
+        target = os.path.join(style_dir(), style_filename(self.Name) + ".json")
+        if os.path.exists(target) and not self.Overwrite:
+            self.report({'ERROR'}, "The name '%s' is saved as %s, which already exists. Tick Overwrite, or save "
+                                   "under another name." % (self.Name, os.path.basename(target)))
+            return {'CANCELLED'}
+        try:
+            entry = capture_style(rig, key=self.Name)
+        except (AttributeError, TypeError, ValueError) as error:
+            self.report({'ERROR'}, "Could not read the rig's display settings: %s" % error)
+            return {'CANCELLED'}
+        if isinstance(style_files().get(self.Name), dict) and not self.Overwrite:
+            self.report({'ERROR'}, "A style called '%s' already exists. Tick Overwrite, or save under another "
+                                   "name." % self.Name)
+            return {'CANCELLED'}
+        try:
+            path = save_style(self.Name, entry)
+        except (OSError, ValueError) as error:
+            self.report({'ERROR'}, "Could not write the style: %s" % error)
+            return {'CANCELLED'}
+        counted = entry.get("captured") or {}
+        self.report({'INFO'}, "Saved style '%s' from %s: %d control(s) in %d colour rule(s), %d left as rigify "
+                              "made them - %s" % (self.Name, rig.name, counted.get("coloured", 0),
+                                                  len(entry.get("colors") or []),
+                                                  counted.get("uncoloured_controls", 0),
+                                                  os.path.basename(path)))
+        return {'FINISHED'}
+
+
+class RigifyChainStyleFolder(bpy.types.Operator):
+    """Open the styles folder, or read it again"""
+
+    bl_idname = "uma.rigify_chain_styles"
+    bl_label = "Rig Display Styles"
+    bl_description = ("Open the folder holding one file per rig display style, or read it again after editing a "
+                      "file by hand. Copy the shipped one to make your own")
+    bl_options = {'REGISTER'}
+
+    Action: EnumProperty(
+        name="Action",
+        items=[('SHOW', "Open The Styles Folder", "Open the folder holding one file per style, in the operating "
+                                                  "system's file browser"),
+               ('RELOAD', "Read It Again", "Read the folder again after a style was added or edited on disk")],
+        default='SHOW',
+    )
+
+    def execute(self, context):
+        ensure_style_files()
+        if self.Action == 'RELOAD':
+            forget_styles()
+            styles = style_files(force=True)
+            self.report({'INFO'}, "%d style(s) in %s" % (len(styles), style_dir()))
+            return {'FINISHED'}
+        try:
+            bpy.ops.wm.path_open(filepath=style_dir())
+        except RuntimeError as error:
+            self.report({'ERROR'}, "Could not open %s: %s" % (style_dir(), error))
+            return {'CANCELLED'}
+        styles = style_files(force=True)
+        self.report({'INFO'}, "%s - %d style file(s)" % (style_dir(), len(styles)))
+        return {'FINISHED'}
+
 
 class RigifyChainRules(bpy.types.Operator):
     """Write the default chain rules, or show where the file is"""
