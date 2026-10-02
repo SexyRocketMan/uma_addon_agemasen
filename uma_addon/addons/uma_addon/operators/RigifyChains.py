@@ -69,8 +69,19 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # Blender keeps a loaded add-on module in memory until it is disabled/enabled or Blender restarts, so an
 # edited file on disk changes nothing until then - that is what the version report after every run is for.
 # Bump BUILD_TAG on every change, and keep it the first word of BUILD.
-BUILD_TAG = "chains-35"
-BUILD = ("chains-35: the code review's findings, fixed. A review of the whole file (12 findings, handoff 9ai) "
+BUILD_TAG = "chains-36"
+BUILD = ("chains-36: a rig belongs to a model, and the run now knows it. Chain bones carry the *same names on "
+         "every character* (`Ear_01_L`, `Sp_He_Hair2_L_00`, `Sp_Hi_Tail0_B_00`), so `chains-33`'s rule - the rig "
+         "carrying most of this model's chain roots wins - cannot tell two characters apart: in the user's file "
+         "the Doto rig carried 13 of King Halo's 15 roots, `Step` detection concluded `Wire only` (\"this model "
+         "already has a rig\"), and the run wired King Halo to **Doto's** rig - 0.936 m joint offsets, six chain "
+         "bones with no ORG copy, and none of the added controls doing anything (handoff 9aj). Runs now stamp "
+         "`rig[\"uma_rig_for\"] = model.name` and `model[\"uma_rig\"] = rig.name` when they generate, and a rig "
+         "counts as this model's by those stamps or by MMR's name (`RIG-<model>_arm`), never by how many chain "
+         "names happen to match. With no rig of its own in the file the run says so and asks for a Full run "
+         "instead of wiring to somebody else's rig; `Step` detection uses the same test, so a second model in a "
+         "file is a Full run again. Also: `_find_model_armature` reads `view_layer.objects.active` before "
+         "`context.active_object`, which are not always the same object. Previous: chains-35: the code review's findings, fixed. A review of the whole file (12 findings, handoff 9ai) "
          "found the shipped behaviour wrong in five places and a panel that promised things it did not do. "
          "`execute` was writing into `load_rules`' *cached* options dict, so `Resample = From rules file` - whose "
          "job is to read that dict - inherited whatever the *previous run in the same Blender session* set: run "
@@ -1497,6 +1508,16 @@ def detect_step(model, trace=None):
                                                     if bone.name.startswith(("Sp_", "Tp_", "Ear"))
                                                     and not bone.name.endswith("_Handle")], trace)
     if rig is None:
+        # No rig in this file belongs to *this* model. Another character's rig does not count, however many of
+        # this model's chain-bone names it happens to carry: measured on the user's two-model file, the Doto rig
+        # carried 13 of King Halo's 15 (handoff 9aj), and a `Wire only` run on that basis wired King Halo to
+        # Doto's rig. So this is the state that needs a Full run, not a wiring pass.
+        elsewhere = RigifyChains._generated_rig_candidates(model)
+        if elsewhere:
+            return 'FULL', ("%d generated rig(s) in this file (%s) and none of them is %s's - chain bones share "
+                            "their names across characters, so another model's rig is not evidence that this one "
+                            "has been rigged" % (len(elsewhere),
+                                                 ", ".join(obj.name for obj in elsewhere[:3]), model.name))
         return 'FULL', "no generated rig in the scene, so there is nothing to wire to yet"
     chain_bones = [bone.name for bone in model.data.bones
                    if bone.name.startswith(("Sp_", "Tp_", "Ear")) and not bone.name.endswith("_Handle")]
@@ -1908,8 +1929,12 @@ class RigifyChains(bpy.types.Operator):
                     bound.setdefault(modifier.object.name, []).append(obj.name)
         candidates = [o for o in context.scene.objects
                       if o.type == 'ARMATURE' and not self._looks_like_control_rig(o)]
-        if context.active_object in candidates:
-            return context.active_object, bound.get(context.active_object.name, [])
+        # `view_layer.objects.active` rather than `context.active_object`: with two models in one file the two
+        # can disagree (a script, or a context copy, can leave `active_object` empty), and then the run silently
+        # falls back to "the first armature with a mesh" - which is the *other* model (handoff 9aj).
+        active = getattr(context.view_layer.objects, "active", None) or context.active_object
+        if active in candidates:
+            return active, bound.get(active.name, [])
         with_mesh = [o for o in candidates if bound.get(o.name)]
         if with_mesh:
             return with_mesh[0], bound.get(with_mesh[0].name, [])
@@ -1929,59 +1954,105 @@ class RigifyChains(bpy.types.Operator):
                 if obj.type == 'ARMATURE' and obj is not model
                 and any(bone.name.startswith(GENERATED_PREFIXES) for bone in obj.data.bones)]
 
+    @staticmethod
+    def _rig_belongs_to(model, rig):
+        """Is this rig *this model's* rig? Ownership, not shape.
+
+        Chain bones carry the **same names on every character** (`Ear_01_L`, `Sp_He_Hair2_L_00`,
+        `Sp_Hi_Tail0_B_00`), so counting how many of a model's chain roots a rig carries cannot tell two
+        characters apart: measured on the user's two-model file (`meisho_doto_dot_o_lantern` rigged first, then
+        `king_halo_swimsuit_clean_head`), the Doto rig carried **13 of King Halo's 15** chain roots, `WIRE`
+        auto-detection concluded "this model already has a rig", and the run wired King Halo to Doto's rig -
+        0.936 m joint offsets and six chain bones with no ORG copy (handoff 9aj). What *can* tell them apart is
+        what a run wrote down when it generated the rig, or the name MMR gives that rig:
+
+        * `rig["uma_rig_for"] == model.name` / `model["uma_rig"] == rig.name` - stamped by every run from
+          `chains-36` on;
+        * the rig name containing the model's name (`RIG-meisho_doto_dot_o_lantern_arm` for
+          `meisho_doto_dot_o_lantern_arm`) - how a scene rigged by an older build is recognised.
+        """
+        if rig is None or model is None:
+            return False
+        try:
+            if model.get("uma_rig") == rig.name or rig.get("uma_rig_for") == model.name:
+                return True
+        except (AttributeError, TypeError):  # not an ID property container: fall through to the name test
+            pass
+        stem = model.name[:-4] if model.name.endswith("_arm") else model.name
+        return bool(stem) and stem in rig.name
+
+    @staticmethod
+    def _chain_root_hits(rig, roots):
+        """How many of `roots` have an `ORG-` copy on this rig."""
+        pose_bones = rig.pose.bones
+        return sum(1 for root in roots if ("ORG-" + root) in pose_bones)
+
     @classmethod
     def _find_rig_for_chains(cls, model, roots, trace=None, preferred=None):
-        """The rigify rig that carries **these** chain roots.
+        """The rigify rig that is **this model's** and carries **these** chain roots.
 
         The old version returned the first armature that was not the model and had any `ORG-`/`DEF-`/`MCH-` bone,
         searched over `bpy.data.objects` - the whole file, not the scene. So a file that also held another
         character's rig wired this character's chains to it: measured on `meisho_doto_dot_o_lantern.pmx` in a file
         that also held Maruzensky's rig, the run reported `generated rig found RIG-maruzensky_フォーミュラオブル
         ージュ_arm`, then 21 of 44 chain roots had an ORG copy there, 38 chain bones had none, every joint
-        measured 1.9 m off, and **none of the added controls did anything** - their constraints pointed at bones
-        of a rig nobody was posing (handoff 9af).
+        measured 1.9 m off, and **none of the added controls did anything** (handoff 9af).
 
-        The question asked here is the one that cannot be fooled by a file holding several characters: **how many
-        of this run's chain roots are on it**. Measured on that two-character file: the right rig carries 44 of
-        44, the other character's 21 of 44. On an exact tie the first candidate in `bpy.data.objects` order wins,
-        unless the rig this run watched appear (`preferred`) is one of the tied ones - the earlier rig may be the
-        one the model is already wired to, so displacing it needs the run to know better. A tie is reported, and
-        so is a candidate set that carries nothing, rather than either being guessed at silently.
+        `chains-33` answered that with "how many of this run's chain roots are on it" - decisive when the two
+        characters' families differ (44 against 21 there) and useless when they do not, because chain bones share
+        their names, so the other character's rig scores highly too. `chains-36` asks for **ownership** first
+        (`_rig_belongs_to`) and uses the root count to rank the rigs this model actually owns. With no owned rig
+        the answer is `None`: the caller reports it instead of wiring to somebody else's rig.
+
+        `preferred` is the rig this run generated, which is exact by construction and skips the question.
         """
         roots = [root for root in roots or [] if root]
+        chosen = bpy.data.objects.get(preferred) if preferred else None
+        if chosen is not None and chosen.type == 'ARMATURE' and chosen is not model:
+            if trace is not None and roots:
+                trace.info("generated rig: %s, the one this run generated (%d of this model's %d chain roots on "
+                           "it)" % (chosen.name, cls._chain_root_hits(chosen, roots), len(roots)))
+            return chosen
+
         candidates = cls._generated_rig_candidates(model)
         if not candidates:
             return None
-
-        def hits(obj):
-            pose_bones = obj.pose.bones
-            return sum(1 for root in roots if ("ORG-" + root) in pose_bones) if roots else 0
-
+        owned = [obj for obj in candidates if cls._rig_belongs_to(model, obj)]
+        if not owned:
+            if trace is not None:
+                trace.info("%d generated rig(s) in this file (%s), none of them this model's: chain bones share "
+                           "their names across characters, so counting them cannot tell two models apart "
+                           "(handoff 9aj)" % (len(candidates),
+                                              ", ".join(obj.name for obj in candidates[:4])))
+                trace.check("a generated rig belongs to this model", False,
+                            "nothing here was generated for %s - the rig(s) present are %s. Run Full for this "
+                            "model rather than wiring it to another character's rig."
+                            % (model.name, ", ".join(obj.name for obj in candidates[:4])))
+            return None
         if not roots:
-            return candidates[0]
+            return owned[0]
+
         best, best_hits, tied = None, -1, 0
-        for obj in candidates:
-            # `bpy.data.objects` order is creation order, and on an exact tie the **first** candidate wins
-            # unless it is `preferred` that is tied: the earlier rig is the one the model may already be wired
-            # to, so displacing it needs the run to know better (`preferred` is the rig this run generated, and
-            # is None on a `Wire only` run). The comment here used to claim the opposite of what the code does
-            # (code review, handoff 9ai).
-            score = hits(obj)
+        for obj in owned:
+            # Among the rigs this model owns, the one carrying most of these roots wins. An exact tie keeps the
+            # first in `bpy.data.objects` (creation) order, because the earlier rig may be the one the model is
+            # already wired to - displacing it needs the run to know better. A tie is reported.
+            score = cls._chain_root_hits(obj, roots)
             if score == best_hits:
                 tied += 1
-            if score > best_hits or (score == best_hits and preferred and obj.name == preferred):
+            if score > best_hits:
                 best, best_hits = obj, score
         if trace is not None:
-            if len(candidates) > 1:
-                trace.info("%d generated rig(s) in this file; wiring to %s, which carries %d of these %d chain "
-                           "roots (%s)%s"
-                           % (len(candidates), best.name, best_hits, len(roots),
-                              ", ".join("%s %d" % (obj.name, hits(obj)) for obj in candidates[:4]),
+            if len(owned) > 1:
+                trace.info("%d rig(s) belong to %s; using %s, which carries %d of these %d chain roots (%s)%s"
+                           % (len(owned), model.name, best.name, best_hits, len(roots),
+                              ", ".join("%s %d" % (obj.name, cls._chain_root_hits(obj, roots))
+                                        for obj in owned[:4]),
                               "; %d tied and the first was kept" % tied if tied else ""))
             if best_hits == 0:
                 trace.check("the rig to wire is the one with these chains", False,
-                            "none of the %d generated rig(s) in this file carries any of them (%s)"
-                            % (len(candidates), ", ".join(obj.name for obj in candidates[:4])))
+                            "none of the %d rig(s) belonging to %s carries any of them (%s)"
+                            % (len(owned), model.name, ", ".join(obj.name for obj in owned[:4])))
         return best
 
     @staticmethod
@@ -2650,16 +2721,19 @@ class RigifyChains(bpy.types.Operator):
             result = original(context, metarig)
             # Which rigify rig this run made: whatever armature exists now that did not exist a moment ago.
             # Not `"RIG-" + metarig.name`: measured in a two-character file, MMR's metarig is handed over as
-            # `MMR-1004_00_arm` and rigify's rig comes out as `RIG-1004_00_arm`, so the name is MMR's business -
-            # the diff is not. The name lookup stays as a fallback for a rigifie that reuses an object.
+            # `MMR-1004_00_arm` and rigify's rig comes out as `RIG-1004_00_arm`, and MMR renames it *again* after
+            # generating (`RIG-MMR-...` -> `RIG-...`), so the name is MMR's business - the object is not. The
+            # name lookup stays as a fallback for a rigify that reuses an object.
             fresh = [obj for obj in bpy.data.objects
                      if obj.type == 'ARMATURE' and obj.name not in before and obj is not self._model
                      and not obj.name.startswith("MMR-")]
             if fresh:
+                state["rig_object"] = fresh[-1]
                 state["rig"] = fresh[-1].name
             elif metarig is not None:
                 guessed = bpy.data.objects.get("RIG-%s" % metarig.name)
                 if guessed is not None and guessed.type == 'ARMATURE':
+                    state["rig_object"] = guessed
                     state["rig"] = guessed.name
             return result
 
@@ -3609,11 +3683,35 @@ class RigifyChains(bpy.types.Operator):
                      if obj.type == 'ARMATURE' and obj.name not in armatures_before and obj is not model
                      and not obj.name.startswith("MMR-")]
             rigify_made = [name for name in fresh if name.startswith("RIG-")]
-            generated_rig_name = state.get("rig") or (rigify_made or fresh or [None])[-1]
+            # The rig object, not its name: MMR renames it after generation (`RIG-MMR-...` -> `RIG-...`), so a name
+            # recorded inside the wrapper can be stale a moment later - measured on the user's two-model file,
+            # where the stamp silently did nothing because of exactly that (handoff 9aj).
+            rig_object = None
+            try:
+                stored = state.get("rig_object")
+                if stored is not None and stored.name in bpy.data.objects:
+                    rig_object = stored
+            except ReferenceError:      # the object was deleted during the run
+                rig_object = None
+            if rig_object is None:
+                for name in (rigify_made or fresh):
+                    candidate = bpy.data.objects.get(name)
+                    if candidate is not None and candidate.type == 'ARMATURE' and candidate is not model:
+                        rig_object = candidate
+                        break
+            generated_rig_name = rig_object.name if rig_object is not None else None
+            # Write down which model this rig was generated for, on both sides, and keep it in the .blend: it is
+            # what tells two characters in one file apart later, because chain bones share their names across
+            # every character and nothing about a rig's *shape* can (handoff 9aj, `_rig_belongs_to`).
+            if rig_object is not None:
+                rig_object["uma_rig_for"] = model.name
+                model["uma_rig"] = rig_object.name
+                trace.info("rig ownership recorded: %s was generated for %s (kept in the .blend, and how a later "
+                           "run tells this model's rig from another character's)" % (rig_object.name, model.name))
             trace.info("this run's generation produced %s%s"
                        % (generated_rig_name or "no new armature",
-                          " (as %s)" % state["rig"] if state.get("rig") else
-                          "" if not fresh else " (%s in the file now)" % ", ".join(fresh[:3])))
+                          " (as %s)" % state["rig"] if state.get("rig") and state["rig"] != generated_rig_name
+                          else "" if not fresh else " (%s in the file now)" % ", ".join(fresh[:3])))
 
         # ---- wire the model to the chains, and verify -----------------------------------------------
         trace.step("wire the model to the chains")
