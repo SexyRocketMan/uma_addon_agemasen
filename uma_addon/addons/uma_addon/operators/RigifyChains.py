@@ -75,8 +75,17 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # Blender keeps a loaded add-on module in memory until it is disabled/enabled or Blender restarts, so an
 # edited file on disk changes nothing until then - that is what the version report after every run is for.
 # Bump BUILD_TAG on every change, and keep it the first word of BUILD.
-BUILD_TAG = "chains-39"
-BUILD = ("chains-39: X-ray is a row in the dialog, because it cannot be a per-family setting. Asked for the chest "
+BUILD_TAG = "chains-40"
+BUILD = ("chains-40: the run reports where its own time went. Reported by the user - *\"the second character did "
+         "finish generating the rig properly, but it seemed to take much longer\"* - with a trace whose only "
+         "timing was `done in 48.2s`, which cannot tell \"MMR is slower with two characters in the file\" from "
+         "\"something in this operator scales with the scene\". Every run now writes two more lines: `timings:` "
+         "(each phase, the whole `uma.mmr_rig` call, and how much of that call was this operator's own metarig "
+         "work) and `scene:` (this model's bones and meshes, then how many *other* armatures, generated rigs and "
+         "meshes are in the file). Measured on the user's own model with `second_model_timing.py`: this "
+         "operator's metarig work is **0.0s of a 16.6s MMR call**, and the doubling happens entirely inside MMR "
+         "when the file already holds another character (16.9s alone, 37.9s as the second character; 0.1s of "
+         "chains and 0.2s of wiring either way). See handoff 9ao. Previous: chains-39: X-ray is a row in the dialog, because it cannot be a per-family setting. Asked for the chest "
          "group - *\"there's no way to access it with coolchou's setup... so I think we can make the chest xray\"* "
          "- and the answer is a fact about Blender rather than about this operator: `show_in_front` is an "
          "**Object** property (`Bone`, `PoseBone` and `BoneCollection` have no equivalent - read off the 5.2 "
@@ -2808,6 +2817,7 @@ class RigifyChains(bpy.types.Operator):
             before = {obj.name for obj in bpy.data.objects if obj.type == 'ARMATURE'}
             if not state["done"]:
                 trace.step("rigify is generating: adding the chains to the metarig first")
+                _insert_started = time.time()
                 # MMR appends its template object inside its own run, so the metarig cannot be known
                 # beforehand: recognise it by shape instead, and only ever touch it once
                 if self._looks_like_metarig(metarig, self._model):
@@ -2842,6 +2852,11 @@ class RigifyChains(bpy.types.Operator):
                                 "rigify was handed %s, which does not look like MMR's metarig"
                                 % (metarig.name if metarig else None))
                     state["error"] = "metarig not recognised"
+                # how long *this operator's* part of the generation took: the chains into the metarig and the
+                # measurement afterwards. Everything else in the MMR call below is MMR's and rigify's own work,
+                # and the trace reports both numbers separately (`timings:`), because "generating takes longer
+                # with two characters in the file" is a claim about MMR unless this split says otherwise.
+                state["insert_seconds"] = time.time() - _insert_started
             result = original(context, metarig)
             # Which rigify rig this run made: whatever armature exists now that did not exist a moment ago.
             # Not `"RIG-" + metarig.name`: measured in a two-character file, MMR's metarig is handed over as
@@ -3629,7 +3644,18 @@ class RigifyChains(bpy.types.Operator):
         trace = Trace(self.Debug)
         trace.step("Pumpkin rig setup %s, step=%s" % (BUILD_TAG, self.Step))
         started = time.time()
+        # Where the time went. The user's report - *"the second character did finish generating the rig properly,
+        # but it seemed to take much longer"* - could not be answered from the trace at all: it carried one total
+        # (`done in 48.2s`) and nothing else, so "MMR is slower with two characters in the file" and "something in
+        # this operator scales with the scene" were both consistent with it. These marks cost nothing and make the
+        # next slow run explain itself. `MMR_SECONDS` is filled in by the wrapper, which is where rigify's own
+        # generation happens, and `INSERT_SECONDS` separates our metarig work from MMR's.
+        marks = []
+        MMR_SECONDS = {}
 
+        def mark(label):
+            marks.append((label, time.time() - started))
+        
         # Answer this before anything is measured: a stale module means every number below describes code that is
         # no longer on disk, which is the one thing that makes an entire run worthless (handoff 9ad).
         stale = stale_source()
@@ -3725,6 +3751,7 @@ class RigifyChains(bpy.types.Operator):
                                       weights=self._bone_weights(self._meshes, trace) if self._meshes else None,
                                       require_weights=bool(options.get("require_weights", True)))
         trace.check("chains found in the model", bool(chains), "%d chains" % len(chains))
+        mark("find the model, rules, families and chains")
         self._report_coverage(model, rules, chains, trace)
         if not chains:
             self.report({'ERROR'}, "[%s] No chains matched the rules file - nothing to add." % BUILD_TAG)
@@ -3780,7 +3807,12 @@ class RigifyChains(bpy.types.Operator):
                 rigify_module.generate_rig = wrapper
                 trace.info("rigify.generate_rig wrapped for the duration of this run")
 
+                _mmr_started = time.time()
                 result = bpy.ops.uma.mmr_rig()
+                # the whole MMR pipeline, which is where rigify's generation happens; `INSERT_SECONDS` is how much
+                # of it was this operator's own work on the metarig
+                MMR_SECONDS["mmr"] = time.time() - _mmr_started
+                MMR_SECONDS["insert"] = state.get("insert_seconds")
                 trace.check("uma.mmr_rig returned FINISHED", result == {'FINISHED'}, str(result))
                 # rigify's Generate operator catches exceptions from generate_rig and still reports
                 # FINISHED, so the insertion's own record decides whether wiring may run at all
@@ -3794,6 +3826,7 @@ class RigifyChains(bpy.types.Operator):
                 trace.check("chains were inserted into the metarig", True,
                             "%d chains, %d bones added" % (state.get("chains", 0),
                                                            state.get("added", 0)))
+                mark("generate the rig (MMR + rigify)")
             except Exception as error:  # noqa: BLE001 - everything is restored in the finally block
                 import traceback
                 trace.check("run completed", False, "%s" % error)
@@ -3885,6 +3918,7 @@ class RigifyChains(bpy.types.Operator):
             self.report({'ERROR'}, "[%s] Wiring the model to the chains failed: %s (see the %s text block)"
                         % (BUILD_TAG, error, text_name))
             return {'CANCELLED'}
+        mark("wire the model to the chains")
 
         wanted = sorted({rule.get("collection") for rule, _ in chains if rule.get("collection")})
         # the metarig was generated before these collections existed on the rig, so the row numbers are
@@ -4013,6 +4047,37 @@ class RigifyChains(bpy.types.Operator):
                        "%s" % (turned, "the style also says %s" % wanted if style_entry is not None
                                else "no style is in use"))
         final_xray = bool(rig.show_in_front)
+        mark("collections, UI rows and the style")
+        # ---- where the time went, and what the scene looked like ------------------------------------------
+        # The two facts a "this run was slow" report needs. `timings:` is this operator's own phases; the MMR
+        # figure inside it is the whole `uma.mmr_rig` call, minus this operator's own metarig work, so a slow run
+        # says by itself whether it was our code or somebody else's. `scene:` is the context, because the number
+        # of *other* armatures, rigs and meshes in the file is the first thing that separates "this model is
+        # heavy" from "this file is heavy" (handoff 9ao).
+        other_rigs = [obj.name for obj in bpy.context.scene.objects
+                      if obj.type == 'ARMATURE' and obj is not model and obj is not rig
+                      and any(bone.name.startswith(("ORG-", "DEF-", "MCH-")) for bone in obj.data.bones)]
+        other_armatures = [obj.name for obj in bpy.context.scene.objects
+                           if obj.type == 'ARMATURE' and obj is not model and obj is not rig]
+        scene_meshes = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
+        phases = []
+        previous = 0.0
+        for label, when in marks:
+            phases.append("%s %.1fs" % (label, when - previous))
+            previous = when
+        phases.append("everything else %.1fs" % max(0.0, (time.time() - started) - previous))
+        mmr_seconds = MMR_SECONDS.get("mmr")
+        insert_seconds = MMR_SECONDS.get("insert")
+        trace.info("timings: %s | total %.1fs" % (" | ".join(phases), time.time() - started))
+        trace.info("timings: the MMR call itself %.1fs%s"
+                   % (mmr_seconds if mmr_seconds is not None else -1.0,
+                      ", of which this operator's metarig work %.1fs" % insert_seconds
+                      if insert_seconds is not None else " (the wrapper never ran)"))
+        trace.info("scene: this model %d bones and %d mesh(es), and %d other armature(s) (%s), %d other "
+                   "generated rig(s) (%s), %d mesh(es) in the file in total"
+                   % (len(model.data.bones), len(meshes or []),
+                      len(other_armatures), ", ".join(other_armatures[:4]) or "none",
+                      len(other_rigs), ", ".join(other_rigs[:4]) or "none", len(scene_meshes)))
         trace.check("the rig carries this run's display style", style_applied, style_detail)
         trace.info("rig display: x-ray %s, %s" % ("on (drawn through the model)" if final_xray else "off", 
                                                   describe_style(style_entry) if style_entry else "no style"))
