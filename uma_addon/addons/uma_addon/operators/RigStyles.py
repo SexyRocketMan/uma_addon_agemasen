@@ -83,6 +83,26 @@ patterns above the general ones. A rule matches on either of:
 A rule with no `color` leaves the bones alone, which is how "internals stay as rigify made them" is written.
 `"select"` and `"active"` are optional extra shades; without them the colour is used for all three states.
 
+See-through rigs
+----------------
+`"object": {"show_in_front": true}` draws the rig through the character. That is the only way to do it: Blender
+has no per-bone, per-family or per-collection X-ray. `show_in_front` belongs to the **object** (there is no such
+property on a bone or a bone collection), and the armature's own draw code reads a widget object only for its
+mesh data, never for its own `show_in_front` - so painting one family's widgets "in front" does nothing.
+
+Two ways to use it, and the difference matters:
+
+    the style file    the rig is generated see-through, every run, until you change the file
+    the X-ray row     "On" or "Off" in the dialog overrides the style *for that run*, whatever the file says
+
+A rig you already have can also be flipped by hand, in Object Properties > Viewport Display > In Front - but the
+next run re-applies the style and puts the file's value back, which is why the dialog row exists.
+
+The shipped style is off, like the animator's rigs. Worth knowing before choosing: with X-ray off, a lot of the
+rig sits inside the character - measured on `1004_00`, 34 of 49 chest controls, 159 of 228 body controls, 39 of
+58 hair and all 12 tail controls are covered by the mesh, up to 7 cm deep - so "off" is the look he works with,
+not a claim that everything is reachable.
+
 Where the default came from
 ---------------------------
 `coolchou.json` was read out of 14 of the animator's own packed rigs - 7062 bones - by `rig_style_dump.py`,

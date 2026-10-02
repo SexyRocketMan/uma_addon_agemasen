@@ -75,8 +75,20 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # Blender keeps a loaded add-on module in memory until it is disabled/enabled or Blender restarts, so an
 # edited file on disk changes nothing until then - that is what the version report after every run is for.
 # Bump BUILD_TAG on every change, and keep it the first word of BUILD.
-BUILD_TAG = "chains-38"
-BUILD = ("chains-38: the rig now looks like the animator's, and the last four fleet failures are named. His display "
+BUILD_TAG = "chains-39"
+BUILD = ("chains-39: X-ray is a row in the dialog, because it cannot be a per-family setting. Asked for the chest "
+         "group - *\"there's no way to access it with coolchou's setup... so I think we can make the chest xray\"* "
+         "- and the answer is a fact about Blender rather than about this operator: `show_in_front` is an "
+         "**Object** property (`Bone`, `PoseBone` and `BoneCollection` have no equivalent - read off the 5.2 "
+         "RNA), and the armature's own overlay draw code takes a custom-shape object only for its *mesh data* "
+         "(`custom->type`, `empty_drawtype`, `empty_drawsize`) and positions it with the *armature's* matrix, so a "
+         "widget's own `show_in_front` is never read. One armature is see-through or it is not. New `X-ray` row: "
+         "`From style` (the default, nothing changes), `On`, `Off` - for a whole rig, applied after the style so "
+         "it wins for that run. It earns its place because a manual flip in Blender's Object Properties > "
+         "Viewport Display lasts only until the next run, which re-applies the style. And because most controls "
+         "sit inside the character: measured with `chest_reach_check.py` (42 directions per control, buried = none "
+         "escapes) - 34 of 49 chest controls, 159 of 228 body, 39 of 58 hair, 12 of 12 tail on `1004_00`, down to "
+         "7 cm deep; the chest is not special, it is just the family whose occlusion does not matter. Previous: chains-38: the rig now looks like the animator's, and the last four fleet failures are named. His display "
          "style was measured out of 14 of his own packed rigs - 7062 bones - and is now data: "
          "`<config>/uma_addon/styles/<key>.json`, one file per style, with `coolchou.json` written on first run "
          "and selected by default (`Style` in the panel, `Save style from this rig` to make more, README in the "
@@ -1927,6 +1939,25 @@ class RigifyChains(bpy.types.Operator):
         items=style_items,
         default=0,
     )
+    # X-ray, whole rig or nothing. See the note in `execute`: Blender has no per-bone or per-family X-ray, so this
+    # is the only form the choice can take - and it is here rather than only in Blender's own Viewport Display
+    # panel because a flip made there lasts until the next run, which re-applies the style.
+    Xray: EnumProperty(
+        name="X-ray",
+        description="Whether the model hides the rig. 'From style' takes the style file's answer (the shipped "
+                    "one is off, like his rigs); 'On' draws the rig through the model, which is how a control "
+                    "inside the clothes can still be clicked - most of them are: on a measured model, 34 of 49 "
+                    "chest controls and 159 of 228 body controls sit inside the character. Blender has no "
+                    "per-bone or per-family X-ray, so this is the whole rig",
+        items=[
+            ('STYLE', "From style", "Use the style file's own X-ray setting"),
+            ('ON', "On - draw through the model", "The rig is drawn in front of the character; nothing is hidden "
+                                                  "behind it"),
+            ('OFF', "Off - the model hides the rig", "The controls behind the character are hidden, as in his "
+                                                     "rigs"),
+        ],
+        default='STYLE',
+    )
     # Simple mode's own fields, one per group. The per-family rows below are Advanced's, so the two do not
     # fight: switching to Simple overrides them while it is selected and leaves them intact (handoff 9y).
     Hair_Mode: mode_property("Hair")
@@ -3502,6 +3533,10 @@ class RigifyChains(bpy.types.Operator):
         style_row.prop(self, "Style", text="")
         style_folder = style_row.row(align=True)
         style_folder.operator(RigifyChainStyleFolder.bl_idname, text="", icon='FILE_FOLDER').Action = 'SHOW'
+        # the X-ray row sits with the style, because that is what it is about: how the rig is drawn. It is the
+        # whole rig (Blender has no scoped X-ray - see `execute`), and it is here rather than only in Blender's
+        # Object Properties panel because that one is overwritten by the style on the next run.
+        column.prop(self, "Xray")
         style_save = column.row()
         style_save.operator(RigifyChainStyleSave.bl_idname, icon='FILE_TICK')
         column.separator()
@@ -3923,30 +3958,64 @@ class RigifyChains(bpy.types.Operator):
         # ---- how the rig is drawn: the display style, last, because it is the only thing that touches nothing --
         # A style is display only (colours, widget sizes, the armature's flags) and idempotent, so it runs after
         # everything that decides what the rig *is*: a run can be repeated on an already-styled rig and the
-        # second pass changes nothing. `show_in_front = False` is the user's own decision - his rigs are not
-        # see-through and ours were, because Controller.py sets it True when it builds MMR's controller.
+        # second pass changes nothing.
         style_entry = read_style(self.Style)
         if style_entry is None and self.Style != STYLE_NONE:
             trace.info("style '%s' is not in %s, so the rig keeps rigify's own display"
                        % (self.Style, style_dir()))
+        style_detail = "no style chosen, so the rig keeps rigify's own display"
+        style_applied = True
         if style_entry is not None:
             try:
                 applied = apply_style(rig, style_entry, chain_names=[name for _rule, names in chains
                                                                      for name in names], trace=trace)
-                trace.check("the rig carries this run's display style", True,
-                            "%s: %d control(s) coloured, %d of them chain families, %d left as rigify made them, "
-                            "%s" % (style_entry.get("key"), applied["coloured"], applied["chain_coloured"],
-                                    applied["left_as_rigify_made_it"], " ".join(applied["flags"][:4])))
+                style_detail = ("%s: %d control(s) coloured, %d of them chain families, %d left as rigify made "
+                                "them, %s" % (style_entry.get("key"), applied["coloured"],
+                                              applied["chain_coloured"], applied["left_as_rigify_made_it"],
+                                              " ".join(applied["flags"][:4])))
                 for warning in applied["warnings"]:
                     trace.info("style warning: %s" % warning)
                 trace.info("display style: %s" % describe_style(style_entry))
             except Exception as error:  # noqa: BLE001 - a rig that is right but plain beats no rig
                 import traceback
-                trace.check("the rig carries this run's display style", False, "%s" % error)
+                style_applied = False
+                style_detail = "%s" % error
                 trace.info(traceback.format_exc())
-        else:
-            trace.check("the rig carries this run's display style", True,
-                        "no style chosen, so the rig keeps rigify's own display")
+
+        # ---- and the one display flag a style cannot scope: X-ray ------------------------------------------
+        # Asked for by the user, for the chest group at first: *"there's no way to access it with coolchou's
+        # setup... so I think we can make the chest xray"*. It cannot be done for one family, and that is a fact
+        # about Blender rather than about this operator: `show_in_front` is an **Object** property (no `Bone`,
+        # `PoseBone` or `BoneCollection` has one - measured off the 5.2 RNA), and the armature's own overlay draw
+        # code reads a custom-shape object only for its *mesh data* - `custom->type`, `empty_drawtype`,
+        # `empty_drawsize` - and positions it with the *armature's* matrix, never looking at the widget's own
+        # `show_in_front`. So the armature draws its bones through the mesh or it does not, as a whole.
+        #
+        # Which is why this row exists instead of a chest button, and why it is worth having at all: a manual
+        # flip in Blender's Object Properties > Viewport Display > In Front does not survive the next run, because
+        # the style is re-applied and puts the style's own value back. `From style` is the default, so nothing
+        # changes for anyone who does not touch this.
+        #
+        # And there is a reason to want it on: with X-ray off, most controls sit *inside* the character - measured
+        # with `chest_reach_check.py` (42 directions per control, buried = none of them escapes): 34 of 49 chest
+        # controls, 159 of 228 body controls, 39 of 58 hair, 12 of 12 tail on `1004_00`, down to 5-7 cm deep. The
+        # chest is not special; it is only the family whose occlusion the user is willing to trade away.
+        if self.Xray in ('ON', 'OFF'):
+            wanted = self.Xray == 'ON'
+            before = bool(rig.show_in_front)
+            rig.show_in_front = wanted
+            turned = ("on: the rig is drawn through the model" if wanted
+                      else "off: the model hides the rig again")
+            style_detail += " | x-ray %s (was %s, %s)" % (
+                turned, "on" if before else "off",
+                "the style's value overridden" if style_entry is not None else "rigify's own value")
+            trace.info("x-ray %s - the whole rig or nothing: Blender has no per-bone or per-family X-ray, and "
+                       "%s" % (turned, "the style also says %s" % wanted if style_entry is not None
+                               else "no style is in use"))
+        final_xray = bool(rig.show_in_front)
+        trace.check("the rig carries this run's display style", style_applied, style_detail)
+        trace.info("rig display: x-ray %s, %s" % ("on (drawn through the model)" if final_xray else "off", 
+                                                  describe_style(style_entry) if style_entry else "no style"))
 
         trace.step("done in %.1fs" % (time.time() - started))
         trace.info("chains %d, model bones wired %d, collections %s"
