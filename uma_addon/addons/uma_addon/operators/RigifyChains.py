@@ -602,12 +602,22 @@ TYPE_MODES = {
     "limbs.spline_tentacle": MODE_SPLINE,
 }
 
+# The dropdown labels are rigify's own type names, because that is what the animator configuring this reads and
+# writes: every one of these is a type he can set in his own metarig, and a preset file stores exactly that string.
+# The plain-English sentence stays in the tooltip, so the dropdown is still readable to somebody who does not know
+# rigify's taxonomy. Asked for by the user: *"I'd also think we should use the rigify rig type names in the Pumpkin
+# Rig menu - that will be clearer to the experienced animators."*
 TYPE_CHOICES = [
-    (MODE_OFF, "Off", "No control of its own; the bones keep MMR's behaviour"),
-    (MODE_STUB, "Follow", "basic.super_copy: one control per bone, no chain"),
-    (MODE_TAIL, "Chain (basic_tail)", "spines.basic_tail: a chain per root with tweak controls; curls when a "
-                                      "control is pushed"),
-    (MODE_SPLINE, "Chain (spline)", "limbs.spline_tentacle: a chain driven by a spline"),
+    (MODE_OFF, "none", "No rig type: the bones keep MMR's behaviour and get no control of their own. This is the "
+                       "`^Sp_` catch-all in the rules table"),
+    (MODE_STUB, "basic.super_copy", "One control per bone, no chain. Rigify's `basic.super_copy`: the type the "
+                                    "animator uses for cloth and hair he does not want to chain"),
+    (MODE_TAIL, "spines.basic_tail", "A chain per root with tweak controls, curling when a control is pushed. "
+                                     "Rigify's `spines.basic_tail`, which his own metarig uses for the ears and "
+                                     "the hair he does chain"),
+    (MODE_SPLINE, "limbs.spline_tentacle", "A chain driven by a spline, posed at its `_master` bone. Rigify's "
+                                           "`limbs.spline_tentacle`, which his metarig uses for the big hair and "
+                                           "the tail"),
 ]
 
 SIMPLE_GROUPS = ("Hair", "Skirt", "Chest", "Tail", "Extras", "Other")
@@ -1162,9 +1172,12 @@ def resolve_rule_modes(model, rules, family_modes, table_modes, fixed, never, tr
                 else:
                     rig_type, source = None, "nothing names it"
             else:
-                rig_type, source = MODE_TYPES.get(mode), "set to %s" % mode
+                rig_type = MODE_TYPES.get(mode)
+                # the trace names the rigify type, not this build's internal mode letter: it is read by people who
+                # know `basic.super_copy` and not `STUB`
+                source = "set to %s" % (rig_type or "none")
             # A type the table names that this build does not know (`limbs.spline_tentacles` in a hand-edited
-            # file) used to be applied verbatim to `rigify_type` while the panel's row showed it as `Follow`
+            # file) used to be applied verbatim to `rigify_type` while the panel's row showed it as a stub
             # (`family_defaults` falls back to MODE_STUB silently), so the rig disagreed with the panel and the
             # failure surfaced later, from rigify. `preset_modes` reports the same case; this makes the table
             # path report it too (code review, handoff 9ai).
@@ -3564,7 +3577,7 @@ class RigifyChains(bpy.types.Operator):
                 row = column.row(align=True)
                 row.label(text="  " + item.family)
                 if item.fixed:
-                    row.label(text="%s (fixed)" % item.fixed.split(".")[-1], icon='LOCKED')
+                    row.label(text="%s (fixed)" % item.fixed, icon='LOCKED')
                 else:
                     right = row.row(align=True)
                     right.prop(item, "mode", text="")
@@ -3580,7 +3593,7 @@ class RigifyChains(bpy.types.Operator):
                 box.prop(self, "%s_Mode" % group)
             locked = [(item.family, item.fixed) for item in self.Families if item.fixed]
             if locked:
-                box.label(text="always: %s" % ", ".join("%s = %s" % (family, rig_type.split(".")[-1])
+                box.label(text="always: %s" % ", ".join("%s = %s" % (family, rig_type)
                                                         for family, rig_type in locked), icon='LOCKED')
             if self.Forced_Advanced:
                 box.label(text="Advanced shows the per-family detail", icon='INFO')
@@ -3718,8 +3731,8 @@ class RigifyChains(bpy.types.Operator):
         if self.Forced_Advanced:
             trace.info("Advanced was selected because this preset gives one group more than one answer: %s"
                        % self.Forced_Advanced)
-        trace.info("fixed: %s" % (", ".join("%s=%s" % (family, rig_type.split(".")[-1])
-                                           for family, rig_type in sorted(fixed.items())) or "none"))
+        trace.info("fixed: %s" % (", ".join("%s=%s" % (family, rig_type)
+                                            for family, rig_type in sorted(fixed.items())) or "none"))
         unchanged = [family for family, mode in chosen.items() if mode == table_modes.get(family)]
         trace.info("families left at the rules table's own answer: %d of %d"
                    % (len(unchanged), len(chosen)))
@@ -3744,7 +3757,7 @@ class RigifyChains(bpy.types.Operator):
                        % (group, len(entries), "y" if len(entries) == 1 else "ies", len(typed_here),
                           ", ".join("%s%s=%s (%s)"
                                     % (family, ("[%s]" % pattern) if family in repeated else "",
-                                       rig_type.split(".")[-1], where)
+                                       rig_type, where)
                                     for family, rig_type, where, pattern in typed_here) or "none"))
 
         chains = self._collect_chains(model, rules, trace,
