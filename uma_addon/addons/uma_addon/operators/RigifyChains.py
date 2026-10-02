@@ -69,8 +69,15 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # Blender keeps a loaded add-on module in memory until it is disabled/enabled or Blender restarts, so an
 # edited file on disk changes nothing until then - that is what the version report after every run is for.
 # Bump BUILD_TAG on every change, and keep it the first word of BUILD.
-BUILD_TAG = "chains-36"
-BUILD = ("chains-36: a rig belongs to a model, and the run now knows it. Chain bones carry the *same names on "
+BUILD_TAG = "chains-37"
+BUILD = ("chains-37: a preset saved for one costume no longer types another costume's physics. The autodetect "
+         "that picks such a preset compares the model's hair *skeleton*, so when it fires the head bone set "
+         "agrees - but costumes differ in their cloth and accessories (`1001_90` has no `Sp_Hi_Ribbon0` at all), "
+         "and a skeleton match says nothing about those. New data, `options.preset_cross_costume`, default "
+         "`\"hair\"`: a preset keyed for another costume may decide its **hair** families, and every other family "
+         "stays with the rules table (which has the `unmatched_families` fallback behind it); `\"all\"` is the "
+         "previous behaviour and `\"exact\"` refuses a cross-costume preset entirely. An exact identity match is "
+         "unaffected and still applies in full, and the panel label says which families were held back. Previous: chains-36: a rig belongs to a model, and the run now knows it. Chain bones carry the *same names on "
          "every character* (`Ear_01_L`, `Sp_He_Hair2_L_00`, `Sp_Hi_Tail0_B_00`), so `chains-33`'s rule - the rig "
          "carrying most of this model's chain roots wins - cannot tell two characters apart: in the user's file "
          "the Doto rig carried 13 of King Halo's 15 roots, `Step` detection concluded `Wire only` (\"this model "
@@ -393,6 +400,13 @@ DEFAULT_RULES = {
         # (`1001_Special Week.pmx`, handoff 9ac). A constant is only kind while it is right, and that one is
         # not right on every export: the tail keeps a field, defaulting to the spline his rigs use.
         "fixed_families": {"Ear": "spines.basic_tail"},
+        # What a preset keyed for *another costume* of the same character may decide. The autodetect that picks
+        # one compares the model's hair skeleton (`detect_preset`), so when it fires the head bone set agrees -
+        # but costumes differ in their physics and accessories (measured: `1001_90` has no `Sp_Hi_Ribbon0` at all,
+        # `docs/RIG_HANDOFF.md` §5), and a skeleton match says nothing about those, so by default only the hair
+        # answers are taken and the rest stay with the rules table (which has the `unmatched_families` fallback
+        # behind it). "all" restores the old behaviour, "exact" refuses a cross-costume preset entirely.
+        "preset_cross_costume": "hair",
         # What a family the table says nothing about gets, instead of nothing. The table names the families the
         # animator's Maruzensky metarig carries; his other 154 packed rigs name many more (`Sp_He_Hair0/1/3/5`,
         # `Sp_He_Acc0`, the sleeves, `Sp_Si_Jacket0`, `Sp_Hi_CSkirt0`, belts, pantaloons, accessory ribbons), and
@@ -1342,7 +1356,7 @@ def preset_table(self, context):
     return rules, options, source, presets
 
 
-def family_defaults(rules, presets, preset_key, families):
+def family_defaults(rules, presets, preset_key, families, identity=None, cross_costume="hair"):
     """What each family should start as: the preset's answer, else the rules table's, else Off.
 
     Returns `(modes, table_modes, source_label)`.
@@ -1355,6 +1369,17 @@ def family_defaults(rules, presets, preset_key, families):
 
     A preset cannot name a family that did not exist when it was made, so anything it does not name falls back
     to the table - stated in the trace rather than guessed at silently.
+
+    `identity` is the model's own `Chara_<id>_<costume>` key, and `cross_costume` says what a preset *keyed for a
+    different costume* may decide (`options.preset_cross_costume`):
+
+    * `"hair"` (the default) - only its **hair** families. The autodetect that chooses such a preset compares the
+      model's hair *skeleton* (`detect_preset`), so when it fires the head bone set genuinely agrees, and hair
+      typing is a statement about which bones are there. Physics and accessory families differ per costume
+      (`1001_90` has no `Sp_Hi_Ribbon0` at all, `docs/RIG_HANDOFF.md` §5) and a skeleton match says nothing about
+      them, so those stay with the rules table - which now has the `unmatched_families` fallback behind it.
+    * `"all"` - every family the preset names, the behaviour before this option existed.
+    * `"exact"` - nothing: a preset only applies to the exact character *and* costume it was saved for.
     """
     table_modes = {}
     for item in families:
@@ -1374,6 +1399,18 @@ def family_defaults(rules, presets, preset_key, families):
     if entry is None:
         return modes, table_modes, "the rules table (preset %s not found)" % preset_key
     named, unknown = preset_modes(entry)
+    elsewhere = bool(identity) and preset_key != identity
+    held_back = []
+    if elsewhere and cross_costume in ("hair", "exact"):
+        kept = {}
+        for item in families:
+            if item.family not in named:
+                continue
+            if cross_costume == "hair" and item.group == "Hair":
+                kept[item.family] = named[item.family]
+            else:
+                held_back.append(item.family)
+        named = kept
     changed = 0
     for family, mode in named.items():
         if family in modes:
@@ -1381,6 +1418,9 @@ def family_defaults(rules, presets, preset_key, families):
             modes[family] = mode
     label = "preset %s (%s, %d families, %d of them different from the table)" % (
         preset_key, entry.get("source") or "no source", len(named), changed)
+    if held_back:
+        label += ("; another costume's preset, so only its hair answers were used and %d other family "
+                  "answer(s) stayed with the rules table" % len(held_back))
     if unknown:
         label += "; unmapped: " + ", ".join(unknown[:3])
     return modes, table_modes, label
@@ -1450,7 +1490,13 @@ def sync_preset(self, context):
         print("[rigify_chains] picking preset '%s' failed (%s: %s); the rows keep what they had"
               % (self.Preset, type(error).__name__, error))
         return
-    modes, table_modes, label = family_defaults(rules, presets, self.Preset, self.Families)
+    # A preset keyed for another costume may only decide hair by default (`options.preset_cross_costume`): the
+    # autodetect behind such a preset compares hair skeletons, and physics differ per costume. The model's
+    # identity is what says whether the preset is this model's or a relative's.
+    model_for_identity, _meshes = self._find_model_armature(context, Trace(False))
+    identity, _bone = model_identity(model_for_identity) if model_for_identity is not None else (None, None)
+    modes, table_modes, label = family_defaults(rules, presets, self.Preset, self.Families, identity,
+                                                str(options.get("preset_cross_costume", "hair")).lower())
     self.Populating = True
     try:
         for item in self.Families:
@@ -3220,7 +3266,9 @@ class RigifyChains(bpy.types.Operator):
                 item.group = family_group(family, bones, rules)
                 item.bones = bones[0]
                 item.fixed = fixed.get(family, "")
-            modes, table_modes, label = family_defaults(rules, presets, self.Preset, self.Families)
+            modes, table_modes, label = family_defaults(
+                rules, presets, self.Preset, self.Families, identity,
+                str(options.get("preset_cross_costume", "hair")).lower())
             for item in self.Families:
                 # a fixed family shows its type and is locked; everything else starts from the preset / table, or
                 # from what this run already had for that family
