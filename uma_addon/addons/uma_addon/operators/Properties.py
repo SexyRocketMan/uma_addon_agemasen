@@ -326,9 +326,16 @@ class UmaScene(bpy.types.PropertyGroup):
                     "the shell a neutral width where the export's channel holds packed vertex colours rather "
                     "than an outline normal set, and give the shell the shipped outline material. Turning it "
                     "off applies upstream's shading exactly as it ships; see docs/OUTLINES.md")
-    
-    ear_target: StringProperty(name="")
 
+    shader_control: BoolProperty(
+        name="One control for every uma's shading",
+        default=True,
+        description="When Shading is applied: give the sun empty one setting per shader value and each "
+                    "character's root empty the same settings as overrides, then drive every material copy from "
+                    "them, so one slider moves every uma in the scene and a character can still differ. Without "
+                    "it the values stay per material and have to be matched by hand; see docs/SHADER_LOOK.md")
+
+    ear_target: StringProperty(name="")
     is_uma_acton: BoolProperty(default=True)
     action_category: EnumProperty(name="", items=get_action_category, update=update_action_category)
     level1: EnumProperty(name="", items=get_level1, update=update_level1)

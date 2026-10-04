@@ -11,6 +11,10 @@ try:
     from ..operators.RigifyChains import RigifyChains, RigifyChainRules
 except ImportError:
     RigifyChains = RigifyChainRules = None
+try:
+    from ..operators.UmaShaderControl import draw_shading_control
+except ImportError:
+    draw_shading_control = None
 from ..operators.Umashader import *
 from ..operators.EarConvert import *
 from ..operators.Motion import *
@@ -56,6 +60,7 @@ class ModelProcessPanel(BasePanel, bpy.types.Panel):
         # the outline containment is a scene setting, so it is visible before Shading is applied and can be
         # switched off there; the operator reads it at run time (docs/OUTLINES.md)
         layout.prop(scene_props, "fix_outlines")
+        layout.prop(scene_props, "shader_control")
         layout.operator(FixMini.bl_idname, icon="SHADERFX")
 
         layout.label(text="Use shape keys to drive ear bones")
@@ -247,4 +252,17 @@ class ControllerPanel(BasePanel, bpy.types.Panel):
                 layout.operator(RigifyChainRules.bl_idname, icon='PRESET')
         if CollapseRig is not None:
             layout.operator(CollapseRig.bl_idname, icon='ARMATURE_DATA')
+
+@reg_order(3)
+class ShadingLookPanel(BasePanel, bpy.types.Panel):
+    """One place to set the look of every uma in the scene, with per-character overrides."""
+    bl_label = "Shading - All Umas"
+    bl_idname = "SCENE_PT_umaaddonpanel5"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context: bpy.types.Context):
+        if draw_shading_control is None:
+            self.layout.label(text="UmaShaderControl.py is missing", icon='ERROR')
+            return
+        draw_shading_control(self.layout, context)
     

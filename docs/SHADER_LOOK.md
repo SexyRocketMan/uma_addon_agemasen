@@ -1,0 +1,95 @@
+# One place to set the shading of every uma in the scene
+
+The Uma Shader does not read scene lighting: a character's brightness comes from the `* Intensity` inputs of its
+`Uma Shader` node group. `Shading` gives **every shader-able material slot its own copy of that material**, so
+"Diffuse Intensity" lives in seven to nine places on a typical character (measured: 6 to 9 copies per model over a
+30-model sweep) and in four times as many on a scene with four characters. Matching those by hand is what this
+replaces.
+
+## What it does
+
+* the **`Uma Sun [DO NOT DELETE]`** empty the shader library brings in carries **one setting per shader value** -
+  these are the *global* values, and they are what every character follows by default;
+* each character's **own root empty** (the empty mmd_tools makes for the model, named after it: `1004_00`,
+  `1001_00`, ...) carries the same settings as *overrides*;
+* every material copy of every character carries **a driver per setting** that resolves one against the other:
+
+      socket  <-  this character's value if it has one, otherwise the global value
+
+Turning one global slider therefore moves every uma in the file at once, and a character that should differ gets
+an override on just the rows it differs in.
+
+## Using it
+
+Open the **UMA** panel in the 3D viewport sidebar and look for **Shading - All Umas**.
+
+| control | what it does |
+|---|---|
+| **Hook up the shading control** | Puts the drivers on every copy of every character. `Shading` already does this for you, so this is for a file that was baked, or made before this feature existed |
+| **Bake into materials** | Writes the current values into the materials and removes the drivers - do this before exporting or handing the file on |
+| **All umas in this scene** | The global sliders: 12 numbers and 6 colours. Every character without an override follows these |
+| the padlock on a row | `LOCKED` = this character follows the global (the row says `global`). Click to give the character its own value, which starts from what it shows right now, so clicking changes nothing until you move the slider. Click again to go back to following |
+| **Copy the global values to this character** | Fills every override with the global's current numbers, as a known starting point for a character's own look |
+| **Follow the global everywhere** | Puts every row of that character back to following |
+
+The line under the two buttons says which mode the file is in:
+
+* *Following the global values (252 driver(s))* - the sliders work;
+* *Baked into the materials - the sliders do nothing until Hook up is run again* - the values are plain numbers in
+  the materials.
+
+## What it controls, and what it does not
+
+Controlled (18 settings, named after the shader's own inputs):
+
+`Light Threshold`, `Diffuse Intensity`, `Diffuse Saturation`, `Shaded Intensity`, `Shaded Saturation`,
+`Metallic Intensity`, `Highlight Intensity`, `Ambient Rimlight Size`, `Ambient Rimlight Intensity`,
+`Rimlight Size`, `Rimlight Intensity`, `Emission Intensity`, and the six colours that go with them
+(`Diffuse`, `Shaded`, `Metallic`, `Highlight`, `Ambient Rimlight`, `Rimlight`).
+
+Not controlled, on purpose:
+
+* the **five texture inputs** - they are per material by definition, that is what the copies are for;
+* **`Toggle If Face`** and **`Emmission Toggle`** - they say *what a part is*, and `Shading` sets them per
+  material when it finds the face, emission and control textures;
+* **eye materials.** `Shading` gives a material whose name contains "eye" a copy of the library's `Uma Eyes`
+  material instead of `Uma Shader`, and that material has **no node group at all** (18 nodes of Mix, Math and
+  Image Texture) - so there is no socket for a driver to write to. An eye copy is its own emission setup and the
+  control leaves it alone; it is also not counted as a copy, so the driver counts here are for the parts that are
+  driven.
+
+## Where the values live, and what travels
+
+The settings are plain custom properties on the objects, so they are saved in the .blend and visible in
+*Properties → Object → Custom Properties* (they also carry a proper range and description there, and the colours
+are real colour fields). Because they are plain properties and not addon-registered ones, the drivers keep working
+even if the extension is switched off: nothing about the mechanism needs the addon once it is in place.
+
+What does **not** travel is a driver. Export to FBX/glTF, or send the .blend to somebody who will not have the
+`Uma Sun` empty, and the values have to be in the materials rather than driven - so **Bake into materials** first.
+Baking keeps each character's own look, overrides included.
+
+## Things worth knowing
+
+* **the global is one look for the scene.** It is seeded once, from the values the file already shows, and shading
+  a second character does not reseed it - otherwise whoever was shaded last would redefine everybody's look.
+* **a material shared by two characters can only follow one of them.** `Shading` makes a copy per slot per object,
+  so this does not happen in practice, but if a material is shared the control says so in the console and it takes
+  the first character's overrides.
+* **it costs 36 drivers per copy** (12 numbers + 6 colours × 4 channels - a colour socket is four scalar drivers,
+  measured: a single driver on the 4-float socket evaluates to `[0, 0, 0, 0]`). On the models measured that is 216
+  to 324 drivers each; creating them takes 0.039 s, and a frame change costs 0.0008 s with them against 0.0005 s
+  without.
+* **if the sliders do nothing**, check the mode line first: a baked file needs *Hook up*. If the mode says driven
+  and a value still does not move, the console names the material and the setting - `uma.shader_hook` reports any
+  socket that did not follow its driver instead of failing quietly.
+
+## Where this was measured
+
+`shader_driver_eval_check.py`, `shader_control_check.py`, `shader_colour_driver_check.py`, `shader_look_check.py`,
+`shader_look_edges_check.py` and `shader_look_fleet.ps1` in the `UmaViewer-DevTools` repository; the results and the
+bugs they caught are written up in `docs/RIGIFY_CHAINS_HANDOFF.md` §9av. The short version: a driver on a shader
+group's input socket follows an ID property (0.5 → 0.5, 2.0 → 2.0), the override/inherit expression resolves both
+ways, and the reason two earlier probes reported that drivers do not work at all is that a Python write to a custom
+property does not tag its datablock - so nothing was ever evaluated. Over a 30-model sweep every model hooked up
+clean: 6 to 11 copies each, 216 to 396 drivers, one global slider reaching all of them.

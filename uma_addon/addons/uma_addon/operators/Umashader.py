@@ -11,6 +11,15 @@ from ..config import __addon_name__
 
 from ..utils.Utils import find_file_by_keywords
 
+# The central shading control (one place to set the look, per-character overrides) lives in its own file so it can
+# be removed on its own; the panel still draws and Shading still runs without it.
+try:
+    from .UmaShaderControl import hook as hook_shader_control
+    from .UmaShaderControl import TAG as SHADER_CONTROL_TAG
+except ImportError:  # pragma: no cover - only when that file is deleted
+    hook_shader_control = None
+    SHADER_CONTROL_TAG = "look-0"
+
 
 def set_modifier_input(modifier, name, identifier, value):
     """Set one input of a geometry nodes modifier on Blender 4.2 through 5.2.
@@ -373,6 +382,28 @@ class ApplyShader(bpy.types.Operator):
             set_modifier_input(geom_mod, "Depth Offset", "Input_15", 0.1)
             if fix_outlines:
                 contain_outline(self, geom_mod, obj, blend_file)
+
+        # The central shading control: one property per setting on the sun empty, one override per character on
+        # its root empty, and a driver per setting per copy resolving override -> global. Hooked up here so a
+        # freshly shaded character is connected without a second click; switchable in the UMA panel, because a
+        # scene that is exported or handed on wants the values baked into the materials instead (see
+        # docs/SHADER_LOOK.md). This reads the scene setting rather than operator input for the same reason
+        # `fix_outlines` does: an operator property has nowhere to be seen until the operator has run.
+        control = bool(getattr(getattr(context.scene, "uma_scene", None), "shader_control", True))
+        if control and hook_shader_control is not None:
+            report = hook_shader_control(context)
+            verification = report.get("verified") or {}
+            if verification.get("wrong_count"):
+                first = verification["wrong"][0]
+                self.report({'WARNING'}, "%s: %d driver(s) made, but %s / %s still reads %s instead of %s"
+                            % (SHADER_CONTROL_TAG, report.get("drivers", 0), first["material"],
+                               first["setting"], first["actual"], first["expected"]))
+            else:
+                print("[uma_addon] %s: %d driver(s) over %d cop(y/ies), %d value(s) verified"
+                      % (SHADER_CONTROL_TAG, report.get("drivers", 0), report.get("copies", 0),
+                         verification.get("checked", 0)))
+            for note in report.get("notes", []):
+                print("[uma_addon] %s: %s" % (SHADER_CONTROL_TAG, note))
 
         self.report({'INFO'}, "Uma shader applied")
         return {'FINISHED'}
