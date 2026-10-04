@@ -45,7 +45,7 @@ is why `_settle()` below tags before it verifies, and why `verify()` exists at a
 """
 
 import bpy
-from bpy.props import BoolProperty, StringProperty
+from bpy.props import BoolProperty, IntProperty, StringProperty
 from bpy.types import Operator
 
 #: The tag reported by the operators and printed when drivers are hooked up, so a report can be told apart from
@@ -74,69 +74,89 @@ LIBRARY_COLLECTION_HINT = "Icosphere"
 #: The value that means "inherit the global setting". Anything below zero is inherit.
 INHERIT = -1.0
 
-#: Every setting the control drives, in the order the panel shows them.
+#: Every setting the control drives, in the order the shader's own interface lists them.
 #:
 #: `key` is the ID property name on the sun and root empties (so a driver's data path is `'["uma_shader_x"]'`),
 #: `input` is the socket on the shader group, and the two are deliberately similar rather than identical: the
 #: socket names are upstream's and must match it exactly, the property names are ours and must stay stable, since
-#: they are written into drivers that live in the .blend.
+#: they are written into drivers that live in the .blend. `section` is the shader's own grouping - it follows its
+#: interface order exactly, so a row is where the shader puts it, and this order is also the order the properties
+#: are created in, which is the order Blender's Custom Properties list shows them in (measured: an ID property
+#: group keeps its insertion order, and `hook()` re-orders a file saved by an earlier build).
 SETTINGS = (
-    {"key": "uma_shader_light_threshold", "input": "Light Threshold", "kind": "number", "default": 0.2,
-     "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
+    {"key": "uma_shader_light_threshold", "input": "Light Threshold", "section": "Light & Shadow",
+     "kind": "number", "default": 0.2, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
      "description": "How dark a shaded area has to be before it counts as shadow. Lower catches more of the "
                     "model; higher keeps more of the flat colour"},
-    {"key": "uma_shader_diffuse_intensity", "input": "Diffuse Intensity", "kind": "number", "default": 1.0,
-     "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+    {"key": "uma_shader_diffuse_intensity", "input": "Diffuse Intensity", "section": "Light & Shadow",
+     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
      "description": "Strength of the lit (diffuse) side of the character"},
-    {"key": "uma_shader_diffuse_saturation", "input": "Diffuse Saturation", "kind": "number", "default": 1.0,
-     "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 2.0,
+    {"key": "uma_shader_diffuse_saturation", "input": "Diffuse Saturation", "section": "Light & Shadow",
+     "kind": "number", "default": 1.0, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 2.0,
      "description": "Colour saturation of the lit side. 0 is greyscale, 1 is the texture's own colours"},
-    {"key": "uma_shader_shaded_intensity", "input": "Shaded Intensity", "kind": "number", "default": 1.0,
-     "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+    {"key": "uma_shader_diffuse_color", "input": "Diffuse Color", "section": "Light & Shadow",
+     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
+     "description": "Tint of the lit side, multiplied over the texture"},
+    {"key": "uma_shader_shaded_intensity", "input": "Shaded Intensity", "section": "Light & Shadow",
+     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
      "description": "Strength of the shadowed side"},
-    {"key": "uma_shader_shaded_saturation", "input": "Shaded Saturation", "kind": "number", "default": 1.0,
-     "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 2.0,
+    {"key": "uma_shader_shaded_saturation", "input": "Shaded Saturation", "section": "Light & Shadow",
+     "kind": "number", "default": 1.0, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 2.0,
      "description": "Colour saturation of the shadowed side"},
-    {"key": "uma_shader_metallic_intensity", "input": "Metallic Intensity", "kind": "number", "default": 1.0,
-     "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+    {"key": "uma_shader_shaded_color", "input": "Shaded Color", "section": "Light & Shadow",
+     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
+     "description": "Tint of the shadowed side, multiplied over the texture"},
+    {"key": "uma_shader_metallic_intensity", "input": "Metallic Intensity", "section": "Metallic",
+     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
      "description": "Strength of the metallic response"},
-    {"key": "uma_shader_highlight_intensity", "input": "Highlight Intensity", "kind": "number", "default": 1.0,
-     "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+    {"key": "uma_shader_metallic_color", "input": "Metallic Color", "section": "Metallic",
+     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
+     "description": "Tint of the metallic response"},
+    {"key": "uma_shader_highlight_intensity", "input": "Highlight Intensity", "section": "Highlight",
+     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
      "description": "Strength of the specular highlight"},
-    {"key": "uma_shader_ambient_rimlight_size", "input": "Ambient Rimlight Size", "kind": "number", "default": 0.1,
-     "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
+    {"key": "uma_shader_highlight_color", "input": "Highlight Color", "section": "Highlight",
+     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
+     "description": "Tint of the specular highlight"},
+    {"key": "uma_shader_ambient_rimlight_size", "input": "Ambient Rimlight Size", "section": "Ambient Rimlight",
+     "kind": "number", "default": 0.1, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
      "description": "Width of the ambient rim, the light that wraps the whole silhouette"},
-    {"key": "uma_shader_ambient_rimlight_intensity", "input": "Ambient Rimlight Intensity", "kind": "number",
+    {"key": "uma_shader_ambient_rimlight_intensity", "input": "Ambient Rimlight Intensity",
+     "section": "Ambient Rimlight", "kind": "number",
      "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
      "description": "Strength of the ambient rim"},
-    {"key": "uma_shader_rimlight_size", "input": "Rimlight Size", "kind": "number", "default": 0.1,
-     "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
+    {"key": "uma_shader_ambient_rimlight_color", "input": "Ambient Rimlight Color",
+     "section": "Ambient Rimlight", "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
+     "description": "Tint of the ambient rim"},
+    {"key": "uma_shader_rimlight_size", "input": "Rimlight Size", "section": "Rimlight",
+     "kind": "number", "default": 0.1, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
      "description": "Width of the directional rim, the edge light on the lit side"},
-    {"key": "uma_shader_rimlight_intensity", "input": "Rimlight Intensity", "kind": "number", "default": 1.0,
-     "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+    {"key": "uma_shader_rimlight_intensity", "input": "Rimlight Intensity", "section": "Rimlight",
+     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
      "description": "Strength of the directional rim"},
-    {"key": "uma_shader_emission_intensity", "input": "Emission Intensity", "kind": "number", "default": 1.0,
-     "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+    {"key": "uma_shader_rimlight_color", "input": "Rimlight Color", "section": "Rimlight",
+     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
+     "description": "Tint of the directional rim"},
+    {"key": "uma_shader_emission_intensity", "input": "Emission Intensity", "section": "Emission",
+     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
      "description": "Strength of the glow on the parts that have an emission texture (the eyes, mostly)"},
-    {"key": "uma_shader_diffuse_color", "input": "Diffuse Color", "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the lit side, multiplied over the texture"},
-    {"key": "uma_shader_shaded_color", "input": "Shaded Color", "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the shadowed side, multiplied over the texture"},
-    {"key": "uma_shader_metallic_color", "input": "Metallic Color", "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the metallic response"},
-    {"key": "uma_shader_highlight_color", "input": "Highlight Color", "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the specular highlight"},
-    {"key": "uma_shader_ambient_rimlight_color", "input": "Ambient Rimlight Color", "kind": "colour",
-     "default": (1.0, 1.0, 1.0, 1.0), "description": "Tint of the ambient rim"},
-    {"key": "uma_shader_rimlight_color", "input": "Rimlight Color", "kind": "colour",
-     "default": (1.0, 1.0, 1.0, 1.0), "description": "Tint of the directional rim"},
 )
 
 SETTING_BY_KEY = {setting["key"]: setting for setting in SETTINGS}
 SETTING_BY_INPUT = {setting["input"]: setting for setting in SETTINGS}
 KEYS = tuple(setting["key"] for setting in SETTINGS)
 
-#: Numeric settings first, then the colours: the panel groups them that way and so does this list.
+#: The sections, in the shader's own order: the settings table is already sorted by them, so this is just its
+#: distinct values in the order they first appear.
+SECTION_ORDER = tuple(dict.fromkeys(setting["section"] for setting in SETTINGS))
+
+
+def section_keys(section):
+    """The settings in one section, in the shader's order."""
+    return tuple(setting["key"] for setting in SETTINGS if setting["section"] == section)
+
+
+#: The numeric settings, and the colours, as two views of the same table.
 NUMERIC_KEYS = tuple(setting["key"] for setting in SETTINGS if setting["kind"] == "number")
 COLOUR_KEYS = tuple(setting["key"] for setting in SETTINGS if setting["kind"] == "colour")
 
@@ -329,6 +349,32 @@ def describe_property(obj, key):
         return None
 
 
+def reorder_properties(obj, keys=KEYS):
+    """Put the settings in the shader's own order, which is the order Blender's own list shows them in.
+
+    Measured, because the user asked and it decides what is possible (`shader_property_shape_check.py`): an ID
+    property group keeps its **insertion order** (created z, a, m -> that order; created m, a, z -> that order),
+    the only handle Blender gives on a property carries `as_dict/clear/update/update_from` and **no grouping or
+    order field at all**, so sections are impossible in that list - but its order is ours to choose. A driver
+    addresses its target by *name*, so deleting and re-creating a driven property keeps the driver working
+    (measured: a socket read 0.42 before, 0.42 after), which makes re-ordering a file saved by an earlier build a
+    safe one-off.
+
+    Returns the keys it moved, or an empty tuple when they were already in order.
+    """
+    ours = [name for name in obj.keys() if name in SETTING_BY_KEY]
+    wanted = [key for key in keys if key in ours]
+    if ours == wanted:
+        return ()
+    values = {key: read_value(obj, key, SETTING_BY_KEY[key]) for key in wanted}
+    for key in wanted:
+        del obj[key]
+    for key in wanted:
+        write_value(obj, key, values[key])
+    ensure_properties(obj, wanted)
+    return tuple(wanted)
+
+
 def write_value(obj, key, value):
     """Set one setting, in the shape an ID property wants."""
     setting = SETTING_BY_KEY[key]
@@ -455,6 +501,12 @@ def hook(context, roots=None, materials=None):
     seed_global(context, every_material)
     for root, _objects, copies in characters:
         ensure_properties(root, KEYS, inherit=True)
+        moved = reorder_properties(root)
+        if moved:
+            report["notes"].append("%s's settings were moved into the shader's own order" % root.name)
+    sun_moved = reorder_properties(sun)
+    if sun_moved:
+        report["notes"].append("the sun's settings were moved into the shader's own order")
 
     # a material used by two characters can only follow one of them
     users = {}
@@ -751,28 +803,43 @@ class ShaderControlFollowGlobal(Operator):
         return {'FINISHED'}
 
 
+class ShaderControlSection(Operator):
+    """Show or hide one group of shading settings in the panel"""
+    bl_idname = "uma.shader_section"
+    bl_label = "Show or hide this group of settings"
+    bl_options = {'INTERNAL'}
+
+    index: IntProperty(name="Group", default=0)
+    all_uma: BoolProperty(name="All umas", default=True)
+
+    def execute(self, context):
+        scene_props = getattr(context.scene, "uma_scene", None)
+        if scene_props is None:
+            return {'CANCELLED'}
+        attribute = "shader_global_sections" if self.all_uma else "shader_uma_sections"
+        # a bitmask rather than a dozen booleans: the sections come from the settings table, so the number of them
+        # is not a constant this file should have to name twice
+        bit = 1 << max(0, min(int(self.index), 30))
+        setattr(scene_props, attribute, int(getattr(scene_props, attribute, 0)) ^ bit)
+        return {'FINISHED'}
+
+
 # --- the panel -----------------------------------------------------------------------------------------
 
-def _draw_global(layout, sun):
-    """All umas: the sliders everything follows unless a character overrides them."""
-    box = layout.box()
-    box.label(text="All umas in this scene", icon='WORLD')
-    for key in NUMERIC_KEYS:
-        box.prop(sun, '["%s"]' % key, text=SETTING_BY_KEY[key]["input"], slider=True)
-    box.label(text="Colours")
-    grid = box.grid_flow(columns=2, align=True)
-    for key in COLOUR_KEYS:
-        grid.prop(sun, '["%s"]' % key, text=SETTING_BY_KEY[key]["input"])
+def _draw_setting_row(layout, host, key):
+    """One global row: the setting's own name, and its value."""
+    setting = SETTING_BY_KEY[key]
+    layout.prop(host, '["%s"]' % key, text=setting["input"], slider=setting["kind"] == "number")
 
 
-def _draw_override(layout, root, key, icon_locked='LOCKED', icon_free='UNLOCKED'):
-    """One row: the follow/override switch, the setting's name, and its value or the word `global`."""
+def _draw_override_row(layout, root, key):
+    """One row for the character: the follow/override switch, the setting's name, and its value or `global`."""
     setting = SETTING_BY_KEY[key]
     value = read_value(root, key, setting)
     inheriting = is_inheriting(value, setting)
     row = layout.row(align=True)
     operator = row.operator(ShaderControlOverride.bl_idname, text="",
-                            icon=icon_locked if inheriting else icon_free, emboss=False)
+                            icon='LOCKED' if inheriting else 'UNLOCKED', emboss=False)
     operator.key = key
     row.label(text=setting["input"])
     if inheriting:
@@ -782,10 +849,36 @@ def _draw_override(layout, root, key, icon_locked='LOCKED', icon_free='UNLOCKED'
         sub.prop(root, '["%s"]' % key, text="", slider=setting["kind"] == "number")
 
 
+def _draw_sections(layout, host, scene_props, mask_name, all_uma, overrides):
+    """The settings, grouped the way the shader groups them, each group collapsible from its own header.
+
+    A `UILayout` cannot collapse on its own - a box with a label is as far as one goes - so the open/closed state
+    of each group lives on the scene's own properties (`shader_global_sections` and `shader_uma_sections`, both
+    bitmasks) and the header is the button that toggles it. Default is "open", so nothing hides by surprise and
+    the panel reads like the shader's own interface until somebody tidies it up.
+    """
+    mask = int(getattr(scene_props, mask_name, 0))
+    for index, section in enumerate(SECTION_ORDER):
+        collapsed = bool(mask & (1 << index))
+        header = layout.row(align=True)
+        toggle = header.operator(ShaderControlSection.bl_idname, text=section, emboss=False,
+                                 icon='TRIA_RIGHT' if collapsed else 'TRIA_DOWN')
+        toggle.index = index
+        toggle.all_uma = all_uma
+        if collapsed:
+            continue
+        for key in section_keys(section):
+            if overrides:
+                _draw_override_row(layout, host, key)
+            else:
+                _draw_setting_row(layout, host, key)
+
+
 def draw_shading_control(layout, context):
     """The panel section: what mode the scene is in, the global settings, then the selected character's."""
     sun = sun_object(context)
     root, objects = character_objects(context)
+    scene_props = getattr(context.scene, "uma_scene", None)
     mode, drivers = status(context)
 
     row = layout.row(align=True)
@@ -799,10 +892,14 @@ def draw_shading_control(layout, context):
     else:
         layout.label(text="No uma shader here yet: run Shading on a character", icon='INFO')
 
-    if sun is None:
+    if sun is None or scene_props is None:
         return
     ensure_properties(sun, KEYS)
-    _draw_global(layout, sun)
+    reorder_properties(sun)
+
+    box = layout.box()
+    box.label(text="All umas in this scene", icon='WORLD')
+    _draw_sections(box, sun, scene_props, "shader_global_sections", True, False)
 
     if root is None or not objects:
         box = layout.box()
@@ -813,14 +910,10 @@ def draw_shading_control(layout, context):
     box = layout.box()
     box.label(text="%s only" % root.name, icon='OBJECT_DATA')
     ensure_properties(root, KEYS, inherit=True)
+    reorder_properties(root)
     if len(materials) != 1:
         box.label(text="%d shader material(s) in this character" % len(materials))
     row = box.row(align=True)
     row.operator(ShaderControlCopyGlobal.bl_idname, icon='COPYDOWN')
     row.operator(ShaderControlFollowGlobal.bl_idname, icon='LOOP_BACK')
-    for key in NUMERIC_KEYS:
-        _draw_override(box, root, key)
-    box.label(text="Colours")
-    grid = box.grid_flow(columns=1, align=True)
-    for key in COLOUR_KEYS:
-        _draw_override(grid, root, key)
+    _draw_sections(box, root, scene_props, "shader_uma_sections", False, True)

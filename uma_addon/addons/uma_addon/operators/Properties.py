@@ -335,6 +335,12 @@ class UmaScene(bpy.types.PropertyGroup):
                     "them, so one slider moves every uma in the scene and a character can still differ. Without "
                     "it the values stay per material and have to be matched by hand; see docs/SHADER_LOOK.md")
 
+    # Which shading groups the panel has folded away, as a bitmask over the groups in the settings table, one for
+    # the global settings and one for the selected character's overrides. Here rather than on the objects
+    # themselves, because a UI state has no business appearing in their Custom Properties list.
+    shader_global_sections: IntProperty(default=0, description="Shading groups folded away in the global list")
+    shader_uma_sections: IntProperty(default=0, description="Shading groups folded away in the character's list")
+
     ear_target: StringProperty(name="")
     is_uma_acton: BoolProperty(default=True)
     action_category: EnumProperty(name="", items=get_action_category, update=update_action_category)

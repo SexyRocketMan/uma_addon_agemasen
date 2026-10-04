@@ -38,6 +38,28 @@ The line under the two buttons says which mode the file is in:
 * *Baked into the materials - the sliders do nothing until Hook up is run again* - the values are plain numbers in
   the materials.
 
+### The rows are grouped the way the shader groups them
+
+The settings appear in the shader's own order, under the same six headings, each with a header you can fold away
+(the fold is remembered per file, per group, separately for the global list and the character's list):
+
+| group | settings |
+|---|---|
+| **Light & Shadow** | Light Threshold, Diffuse Intensity, Diffuse Saturation, Diffuse Color, Shaded Intensity, Shaded Saturation, Shaded Color |
+| **Metallic** | Metallic Intensity, Metallic Color |
+| **Highlight** | Highlight Intensity, Highlight Color |
+| **Ambient Rimlight** | Ambient Rimlight Size, Ambient Rimlight Intensity, Ambient Rimlight Color |
+| **Rimlight** | Rimlight Size, Rimlight Intensity, Rimlight Color |
+| **Emission** | Emission Intensity |
+
+The values are also visible in Blender's own *Properties → Object → Custom Properties* list, in that same order -
+but **that list cannot be sectioned**. The only handle Blender offers on a custom property
+(`IDPropertyUIManager`) carries `as_dict`, `clear`, `update` and `update_from`, and no grouping, ordering or tab
+field of any kind (measured, `shader_property_shape_check.py`). What it does have is insertion order, so the
+properties are created in the shader's order and a file saved before that was true is moved into it automatically
+the next time *Hook up* runs - which is safe because a driver points at its target by name, not by position.
+Grouping is therefore a feature of this panel, not of the properties.
+
 ## What it controls, and what it does not
 
 Controlled (18 settings, named after the shader's own inputs):
