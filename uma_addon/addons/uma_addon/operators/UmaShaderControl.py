@@ -303,6 +303,10 @@ def ensure_properties(obj, keys=KEYS, seed=None, inherit=False):
             created.append(key)
     for key in keys:
         setting = SETTING_BY_KEY[key]
+        if key not in created and describe_property(obj, key) == setting.get("description", ""):
+            # already described: the panel calls this on every redraw, and a write that cannot change anything is
+            # a write worth not making
+            continue
         update = {"description": setting.get("description", "")}
         if setting["kind"] == "colour":
             update["subtype"] = 'COLOR'
@@ -315,6 +319,14 @@ def ensure_properties(obj, keys=KEYS, seed=None, inherit=False):
             # a Blender without id_properties_ui keeps working, the properties just draw as plain numbers
             pass
     return created
+
+
+def describe_property(obj, key):
+    """The description this property already carries, or None when it has none (or the API is absent)."""
+    try:
+        return obj.id_properties_ui(key).as_dict().get("description")
+    except (TypeError, AttributeError, KeyError):
+        return None
 
 
 def write_value(obj, key, value):
