@@ -83,9 +83,14 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-51"
+BUILD_TAG = "chains-52"
 BUILD = BUILD_TAG + (
-    ": 2.12.0 - \"Agemasen edition\" (the manifest, the README and the line this addon prints at load), a "
+    ": 2.13.0 - an Uninstall button in the add-on's own preferences panel. Blender draws one in "
+    "that list only for a *legacy* add-on (bl_pkg/bl_extension_ui.py:242-247), so an extension install "
+    "had none anywhere a user would look; the button runs extensions.package_uninstall for an "
+    "extension and preferences.addon_remove for a legacy copy, names the folder in a confirmation "
+    "dialog first, and reports a read-only system repository instead of trying. Before that: 2.12.0 - "
+    "\"Agemasen edition\" (the manifest, the README and the line this addon prints at load), a "
     "second maintainer, and the face-normal step shipping on by default beside the shading options: a hidden "
     "static copy of the face with its custom normals transferred, so a morph stops dragging the shading with "
     "it, and the scene checkbox turns it off. Before that: the shading control shipped as 2.11.0 - one place to "
@@ -96,7 +101,7 @@ BUILD = BUILD_TAG + (
     "wrapper, not the operator, so `sync_preset` called a method that was not there), the action library lists and "
     "applies again, a leftover MMR metarig template is refused up front, and the addon is smaller - the Tanuki GIF "
     "shader nodes, Pillow, the pip buttons and the install-time network permission are gone, along with Change Head "
-    "(48 registered operators and 4 panels, against 55 and 5)")
+    "(52 registered operators and 4 panels, against 55 and 5 - counted by panel_census_probe.py on the shipped tree, because the 48 that used to be written here stopped being true when the shading control's seven operators landed)")
 
 # What the rules fall back to when no file exists. A type rule matches at the start of a bone name, a skip
 # rule matches anywhere, and the first rule that matches a bone wins. Patterns are matched against the
