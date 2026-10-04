@@ -32,9 +32,11 @@ class ToggleFavorite(bpy.types.Operator):
             item = scene_props.filtered_actions[idx]
             item.is_favorite = not item.is_favorite
             bpy.ops.wm.save_userpref()
-            
-            if scene_props.action_category == "fav":
-                get_action(scene_props, context)
+
+            # Always, not only for a category called `fav`: that test is a leftover from a three-category design
+            # (the categories are ear and tail now), so marking a favourite never refreshed the list - including
+            # the `Favorite` level, whose whole content *is* the favourites.
+            get_action(scene_props, context)
         return {'FINISHED'}
 
 class ApplyAction(bpy.types.Operator):
@@ -145,7 +147,11 @@ class ApplyAction(bpy.types.Operator):
             target_fc.update()
 
         bpy.data.actions.remove(src_action)
-        context.area.tag_redraw()
+        # only when there is a UI: a background or scripted session has no area, and raising
+        # "AttributeError: 'NoneType' object has no attribute 'tag_redraw'" there is a liability - every probe in
+        # this project calls operators headlessly, which is how this was found while verifying this feature
+        if context.area is not None:
+            context.area.tag_redraw()
         self.report({'INFO'}, f"Applied successfully")
         return {'FINISHED'}
 
@@ -247,6 +253,10 @@ class ApplyKeyAction(bpy.types.Operator):
             target_fc.update()
 
         bpy.data.actions.remove(src_action)
-        context.area.tag_redraw()
+        # only when there is a UI: a background or scripted session has no area, and raising
+        # "AttributeError: 'NoneType' object has no attribute 'tag_redraw'" there is a liability - every probe in
+        # this project calls operators headlessly, which is how this was found while verifying this feature
+        if context.area is not None:
+            context.area.tag_redraw()
         self.report({'INFO'}, f"Applied successfully")
         return {'FINISHED'}

@@ -1,4 +1,5 @@
 import bpy
+import os
 from bpy.props import IntProperty, BoolProperty, StringProperty, BoolVectorProperty, FloatVectorProperty, FloatProperty, EnumProperty, CollectionProperty, PointerProperty
 from ..config import __addon_name__
 from math import pi
@@ -146,6 +147,34 @@ def sync_display_name(self, context):
             _is_updating_list = True 
             self.display_name = new_name
             _is_updating_list = False
+
+def fill_all_actions(prefs, force=False):
+    """Read the action names out of `Umashaders.blend` into `prefs.all_actions`.
+
+    Lives here rather than only in the addon's `__init__.py` because two callers need it: the startup timer, and
+    the panel, which has to cope with a session where that timer never ran. Measured: with `--factory-startup`
+    (a fresh profile, a background session, or a user who pressed *Clear Data*) `prefs.all_actions` is empty, and
+    the panel then had nothing to list under any filter - the same dead end as an empty list with no explanation,
+    one layer deeper.
+
+    Returns how many names it added.
+    """
+    if not force and len(prefs.all_actions) > 0:
+        return 0
+    blend_file = os.path.join(os.path.dirname(__file__), "Umashaders.blend")
+    if not os.path.exists(blend_file):
+        print("[uma_addon] %s not found, so the action library is empty" % blend_file)
+        return 0
+    try:
+        with bpy.data.libraries.load(blend_file) as (data_from, _data_to):
+            action_names = list(data_from.actions)
+    except Exception as error:  # noqa: BLE001
+        print("[uma_addon] could not list the actions in %s: %s" % (blend_file, error))
+        return 0
+    for name in action_names:
+        prefs.all_actions.add().name = name
+    return len(action_names)
+
 
 class FilteredActions(bpy.types.PropertyGroup):
     is_favorite: BoolProperty(default=False, update=sync_fav)
@@ -343,12 +372,24 @@ class UmaScene(bpy.types.PropertyGroup):
 
     ear_target: StringProperty(name="")
     is_uma_acton: BoolProperty(default=True)
-    action_category: EnumProperty(name="", items=get_action_category, update=update_action_category)
+    # `default=1` is not a preference, it is the fix for a reported dead end, and it has to be an **index**: with
+    # `items` given as a callback Blender refuses an identifier ("'default' can only be an integer when 'items' is
+    # a function" - the same rule the preset dropdown documents). Index 1 is `tail` in `get_action_category`'s
+    # two-item list. With no default at all the enum opened on its first item (`ear`) *and* `level1` opened on its
+    # first item (`Favorite`), whose filter needs `action.is_favorite` - so the panel greeted every user with an
+    # empty action list and no explanation, which is the "I've never managed to get the ear/tail actions presets
+    # working" report. `tail` is a plain substring test over the 49 `*tail*` actions the library holds, so the
+    # panel lists something the moment it is opened.
+    action_category: EnumProperty(name="", items=get_action_category, update=update_action_category,
+                                  default=1)
     level1: EnumProperty(name="", items=get_level1, update=update_level1)
     level2: EnumProperty(name="", items=get_level2, update=update_level2)
     level3: EnumProperty(name="", items=get_level3, update=update_level3)
     filtered_actions: CollectionProperty(type=FilteredActions)
     action_index: IntProperty(name="", default=0, options={'HIDDEN'})
+    #: The action list is only built when a filter *changes*, so a scene that was never touched had an empty list
+    #: under a good default too - the panel fills it once on first draw and marks this. See `ensure_action_list`.
+    action_list_filled: BoolProperty(default=False)
 
     action_source: PointerProperty(name="Source", type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE' and obj != self.action_target, update=update_action_source)
     action_target: PointerProperty(name="Target", type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE' and obj != self.action_source, update=update_action_target)

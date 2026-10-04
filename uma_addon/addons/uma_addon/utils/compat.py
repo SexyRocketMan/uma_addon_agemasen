@@ -236,16 +236,27 @@ def action_groups(action, anim_data=None, slot=None):
 
 
 def ensure_group(action, name, anim_data=None, slot=None):
-    """Find or create a named curve group for this owner."""
+    """Find or create a named curve group for this owner.
+
+    Looks the group up by **iterating**, not with `.get()`: measured on 5.2, `action.groups` can be an
+    `ActionGroupsCompatibility` wrapper - what a slotted action hands back for groups that predate the layered
+    API - and that object supports iteration and indexing but has no `get`. Calling `.get` on it raised
+    `AttributeError: 'ActionGroupsCompatibility' object has no attribute 'get'` out of `Apply Action`
+    (`Motion.py:122` -> here), so applying *any* action to a rig whose action already carried legacy groups did
+    nothing at all. Iteration finds the same group and works on both shapes.
+    """
     groups = action_groups(action, anim_data, slot)
     if groups is None:
         return None
-    existing = groups.get(name)
-    if existing is not None:
-        return existing
+    try:
+        for group in groups:
+            if group.name == name:
+                return group
+    except TypeError:  # a collection that cannot be iterated at all: fall through to the create attempt
+        pass
     try:
         return groups.new(name)
-    except (TypeError, RuntimeError):
+    except (TypeError, RuntimeError, AttributeError):
         return None
 
 

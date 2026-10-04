@@ -46,20 +46,10 @@ def fill_data_on_start():
             item = prop.add()
             item.name = i
 
-    prop = prefs.all_actions
-    if len(prop) < 1:
-        blend_file = os.path.join(os.path.dirname(__file__), "operators", "Umashaders.blend")
-        if not os.path.exists(blend_file):
-            print(f"ERROR: {blend_file} not found")
-            return
-        try:
-            with bpy.data.libraries.load(blend_file) as (data_from, _):
-                action_names = data_from.actions
-        except Exception as e:
-            print(str(e))
-        for i in action_names:
-            item = prop.add()
-            item.name = i
+    # the action library: one reader, in Properties, because the panel needs the same fill when this timer has not
+    # run (a fresh profile, a background session, or a user who pressed Clear Data - all measured)
+    from .operators.Properties import fill_all_actions
+    fill_all_actions(prefs)
 
 def register():
     # Register classes

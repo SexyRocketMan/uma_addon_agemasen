@@ -104,6 +104,50 @@ class UMA_UL_Mappings(bpy.types.UIList):
         draw = {0: mapping, 1: rotation, 2: location}
         draw[context.scene.uma_scene.editing_type]()
 
+from ..operators.Properties import fill_all_actions, get_action
+
+
+def ensure_action_list(scene_props, context):
+    """Build the action list the first time the panel is drawn, once per scene.
+
+    The list is otherwise only written when a dropdown *changes* (`update_action_category`,
+    `update_level1/2/3`) or when a favourite is toggled, so a scene nobody had touched showed an empty list under
+    a perfectly good default - the second half of the reported *"I've never managed to get the ear/tail actions
+    presets working"*.
+
+    It also fills the library itself when it is empty: `prefs.all_actions` is read by a **startup timer**, and a
+    session where that has not run (a fresh profile, `--factory-startup`, a background run, or a user who pressed
+    *Clear Data*) otherwise has nothing to list under any filter. Both fills happen once - the flag is what keeps
+    them out of every redraw.
+
+    A module-level function so a probe can call exactly what `draw` calls; the panel is not drawable headlessly.
+    """
+    if scene_props.action_list_filled:
+        return False
+    prefs = context.preferences.addons[__addon_name__].preferences
+    if len(prefs.all_actions) < 1:
+        added = fill_all_actions(prefs)
+        print("[uma_addon] action library was empty; read %d name(s) from Umashaders.blend" % added)
+    get_action(scene_props, context)
+    scene_props.action_list_filled = True
+    return True
+
+
+def action_list_hint(scene_props):
+    """Why the action list is empty, in one sentence, or None when it is not empty.
+
+    A module-level function because the panel is not drawable headlessly, and this is the part of the panel worth
+    asserting on: an empty list that says nothing is what made the ear/tail actions look broken. The two cases are
+    different and deserve different words - `Favorite` with nothing favourited is a normal first state, while "no
+    actions match" means the level choice is wrong.
+    """
+    if scene_props.filtered_actions:
+        return None
+    if scene_props.action_category == "ear" and scene_props.level1 == "Favorite":
+        return "No favourites yet - pick a level above, then the heart marks one"
+    return "No actions match %s / %s" % (scene_props.action_category, scene_props.level1)
+
+
 @reg_order(1)
 class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
     bl_label = "Physics & Action"
@@ -144,6 +188,12 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
                 fav_icon = 'FUND' if curr_item.is_favorite else 'HEART'
             else:
                 fav_icon = 'HEART'
+            # the list is built by the filter updates, so a scene nobody has touched has none: fill it here, once
+            if not scene_props.action_list_filled:
+                ensure_action_list(scene_props, context)
+                if scene_props.filtered_actions:
+                    curr_item = scene_props.filtered_actions[scene_props.action_index]
+                    fav_icon = 'FUND' if curr_item.is_favorite else 'HEART'
             row = layout.row()
             col = row.column(align=True)
             box = col.box()
@@ -152,6 +202,10 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
                 box_row.operator(ApplyKeyAction.bl_idname)
             elif cat == 'tail':
                 box_row.operator(ApplyAction.bl_idname)
+            # Nothing to apply means nothing to apply: the buttons go dead rather than failing on a click, and the
+            # reason is written down. `action_list_hint` is the whole of that sentence, as a function so a probe can
+            # read it without a UI (the reported dead end was an empty list that said nothing).
+            box_row.enabled = bool(scene_props.filtered_actions)
             col.template_list(
                 "UMA_UL_Action", "", 
                 scene_props, "filtered_actions", 
@@ -159,7 +213,11 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
                 type=compat.TEMPLATE_LIST_GRID, 
                 columns=4, rows=14
             )
-            box_row.operator(ToggleFavorite.bl_idname, text="", icon=fav_icon)
+            hint = action_list_hint(scene_props)
+            if hint:
+                col.label(text=hint, icon='INFO')
+            heart = box_row.operator(ToggleFavorite.bl_idname, text="", icon=fav_icon)
+            heart.enabled = bool(scene_props.filtered_actions)
         else:
             row.operator(AnyActionMode.bl_idname, icon="ANIM", emboss=False)
             row = layout.row(align=True)
