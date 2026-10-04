@@ -135,11 +135,17 @@ def make_copy(context, face_obj, armature, head, trace=None):
     copy[COPY_MARKER] = True
     copy["uma_face_normals_for"] = face_obj.name
 
-    # static with respect to *morphs*: the shape keys go, so nothing moves the copy's geometry. Removing the
-    # armature modifier as well is what makes it static with respect to the *pose* - it follows the head by
-    # rotation only, which is the recipe.
+    # static with respect to *morphs*: the shape keys go, so nothing moves the copy's geometry.
     copy.shape_key_clear()
-    for modifier in [item for item in copy.modifiers if item.type == 'ARMATURE']:
+    # **every** modifier goes, not only the armature one. The copy is made *after* `Shading` has put its own
+    # `Uma Outlines` geometry-nodes modifier on the face, so a copy that kept it would be the *shelled* mesh - twice
+    # the face corners - while the destination at the transfer's position is the plain one. That is the reported
+    # error word for word:
+    #   ERROR Source and destination meshes do not have the same number of face corners, 'Topology' mapping cannot
+    #   be used in this case
+    # and it is why the failure only appeared in a shaded scene: on a plain import there is no outline modifier to
+    # inherit, and the two sides measure equal (76,584 corners each).
+    for modifier in list(copy.modifiers):
         copy.modifiers.remove(modifier)
 
     constraint = copy.constraints.new('COPY_ROTATION')
@@ -150,9 +156,12 @@ def make_copy(context, face_obj, armature, head, trace=None):
     constraint.mix_mode = 'REPLACE'
     constraint.influence = 1.0
 
-    copy.hide_set(True)
+    # Hidden the ordinary way, with the flags the Outliner's eye and the render toggle actually drive.
+    # `hide_set(True)` is deliberately *not* used: it is a per-view-layer hide that overrides those flags, so the
+    # reported "I couldn't get it to appear even after enabling viewport visibility" is exactly what it causes.
     copy.hide_viewport = True
     copy.hide_render = True
+    copy.hide_select = False
     if copy.parent is None and face_obj.parent is not None:
         # keep it in the same place as the object it copies, without inheriting what makes that object move
         copy.matrix_world = face_obj.matrix_world
@@ -162,12 +171,24 @@ def make_copy(context, face_obj, armature, head, trace=None):
     return copy
 
 
-def make_modifier(face_obj, copy, group=None):
-    """The transfer: corner custom normals, topology mapping, from the copy."""
+def make_modifier(face_obj, copy, group=None, context=None):
+    """The transfer: corner custom normals, topology mapping, from the copy.
+
+    **It goes at the top of the stack**, and that is not cosmetic. `TOPOLOGY` mapping maps corner for corner and
+    requires that source and destination have the same topology - and `Shading` puts the **`Uma Outlines`
+    geometry-nodes modifier** on the mesh *before* this step runs, which **adds a shell** (it duplicates the geometry
+    to draw the line). A transfer appended after it sees twice the loops the copy has, which is the reported
+    *"data transfer modifier reports an error with mismatched topology after I change the value of the morph"*. At
+    the top of the stack the destination is still the plain mesh, so the counts match: measured on a plain import,
+    76,584 loops on both sides and the transfer takes.
+    """
     modifier = face_obj.modifiers.get(MODIFIER_NAME)
     if modifier is None:
         modifier = face_obj.modifiers.new(MODIFIER_NAME, 'DATA_TRANSFER')
-    modifier.object = copy
+        # `object` stays unset until after the move: a new modifier is *appended*, and with a source set it is
+        # evaluated once down there - after Shading's outline modifier, on twice the corners - which prints
+    # `ERROR Source and destination meshes do not have the same number of face corners` before the move fixes it.
+    # With no source the modifier does nothing, so moving it is silent.
     modifier.use_loop_data = True
     modifier.data_types_loops = {'CUSTOM_NORMAL'}
     modifier.loop_mapping = 'TOPOLOGY'
@@ -179,6 +200,17 @@ def make_modifier(face_obj, copy, group=None):
     # the whole object
     modifier.vertex_group = group.name if group is not None else ""
     modifier.invert_vertex_group = False
+    if context is not None and face_obj.modifiers[0].name != MODIFIER_NAME:
+        try:
+            with context.temp_override(object=face_obj, active_object=face_obj,
+                                       selected_objects=[face_obj],
+                                       selected_editable_objects=[face_obj]):
+                bpy.ops.object.modifier_move_to_index(modifier=MODIFIER_NAME, index=0)
+        except Exception as error:  # noqa: BLE001 - neither the panel nor Shading may die for this
+            print("[uma_addon] %s: could not move %r to the top of the stack (%s: %s); a transfer that reports "
+                  "mismatched topology is what that costs" % (TAG, MODIFIER_NAME, type(error).__name__, error))
+    # the source, last: see the note above about the evaluated-once-in-the-wrong-place error
+    modifier.object = copy
     return modifier
 
 
@@ -235,7 +267,7 @@ def apply_face_normals(context, objects=None, trace=None):
             # refresh it in place: a re-run must not stack copies
             copy.data = face_obj.data.copy() if copy.data is None else copy.data
             entry["copy"] = "reused"
-        modifier = make_modifier(face_obj, copy, group)
+        modifier = make_modifier(face_obj, copy, group, context)
         entry["modifier"] = modifier.name
         entry["settings"] = {"object": copy.name, "use_loop_data": modifier.use_loop_data,
                              "data_types_loops": modifier.data_types_loops,
