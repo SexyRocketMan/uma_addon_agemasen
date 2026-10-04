@@ -117,3 +117,36 @@ group's input socket follows an ID property (0.5 → 0.5, 2.0 → 2.0), the over
 ways, and the reason two earlier probes reported that drivers do not work at all is that a Python write to a custom
 property does not tag its datablock - so nothing was ever evaluated. Over a 30-model sweep every model hooked up
 clean: 6 to 11 copies each, 216 to 396 drivers, one global slider reaching all of them.
+
+## Face normals that survive morphs
+
+A facial morph deforms the face, and the face's **shading normals** come with it: the field stops being the one the
+model was authored with, which a toon shader shows as a shifting terminator and odd shading on the face. The
+optional step below keeps the normals still:
+
+* a **hidden static copy** of the face is kept in the scene - same mesh, **no shape keys** and **no armature
+  modifier**, so nothing deforms it;
+* it **copies the rotation of the head bone** (`Head`) through a `COPY_ROTATION` constraint, so it turns with the
+  head and the transferred normals keep facing the right way when the character looks around;
+* a **Data Transfer modifier** on the real face takes **corner custom normals** from that copy with **`TOPOLOGY`**
+  mapping - corner for corner, which is exact because the copy is the same mesh;
+* the modifier is left **live**, not baked, so the copy stays the thing that decides.
+
+**It is on by default** ("Face normals that survive morphs" in the Processing Model panel, next to the other
+shading options) because the manual setup it automates is the usual one. Untick it to opt out. The row's two
+buttons are for doing it by hand: the driver icon re-runs it, the bin removes the copy and the transfer again.
+
+Two things worth knowing:
+
+* **on a model whose face is not a separate object** - which is what a plain mmd_tools import gives you, one mesh
+  holding body, face, brows, hair and tail - the transfer is limited to a **`UMA_Face` vertex group** built from
+  the face materials, so the body's own normals keep following its deformation. On a model where the face *is* its
+  own object (the setup this automates), it transfers to that object whole;
+* **the copy is hidden from the viewport and from renders**, but it is a real object in the file: export with the
+  option off, or remove it first, if your export step does not skip hidden objects. Whether a live modifier's
+  normals reach an exported PMX/FBX is worth checking per exporter - baking the modifier is the safe answer if it
+  does not.
+
+The visual result is the acceptance test here, not a number: this project's normal-field statistic
+(`docs/MORPH_ARTEFACT.md`) *was* used to describe the problem, but it ultimately failed as a metric, so there is no
+measurement in this repository that says the step helps - look at a morphed face with the option on and off.

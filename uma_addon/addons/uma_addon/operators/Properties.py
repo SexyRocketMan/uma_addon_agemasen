@@ -364,6 +364,15 @@ class UmaScene(bpy.types.PropertyGroup):
                     "them, so one slider moves every uma in the scene and a character can still differ. Without "
                     "it the values stay per material and have to be matched by hand; see docs/SHADER_LOOK.md")
 
+    face_normals: BoolProperty(
+        name="Face normals that survive morphs",
+        default=True,
+        description="When Shading is applied: keep a hidden static copy of the face, turning with the head, and "
+                    "transfer its custom split normals onto the face, so a facial morph stops dragging the "
+                    "shading normals with it. On by default because the manual setup it automates is the usual "
+                    "one; untick it if a future shader or model breaks, and 'Remove face normal transfer' takes "
+                    "the copy and the transfer out again. See docs/SHADER_LOOK.md")
+
     # Which shading groups the panel has folded away, as a bitmask over the groups in the settings table, one for
     # the global settings and one for the selected character's overrides. Here rather than on the objects
     # themselves, because a UI state has no business appearing in their Custom Properties list.

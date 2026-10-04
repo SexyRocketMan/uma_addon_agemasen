@@ -15,6 +15,12 @@ try:
     from ..operators.UmaShaderControl import draw_shading_control
 except ImportError:
     draw_shading_control = None
+try:
+    from ..operators.FaceNormals import FaceNormalsApply, FaceNormalsRemove
+    face_normals_module = True
+except ImportError:
+    FaceNormalsApply = FaceNormalsRemove = None
+    face_normals_module = None
 from ..operators.Umashader import *
 from ..operators.EarConvert import *
 from ..operators.Motion import *
@@ -61,6 +67,15 @@ class ModelProcessPanel(BasePanel, bpy.types.Panel):
         # switched off there; the operator reads it at run time (docs/OUTLINES.md)
         layout.prop(scene_props, "fix_outlines")
         layout.prop(scene_props, "shader_control")
+        # The face-normal transfer is the third of these optional shading steps (docs/SHADER_LOOK.md): a hidden
+        # static copy of the face turning with the head, and a data transfer of its custom split normals. On by
+        # default, because the manual setup it automates is the usual one, and the two buttons below are for
+        # re-running or undoing it by hand.
+        row = layout.row(align=True)
+        row.prop(scene_props, "face_normals")
+        if face_normals_module is not None:
+            row.operator(FaceNormalsApply.bl_idname, text="", icon='DRIVER')
+            row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
         layout.operator(FixMini.bl_idname, icon="SHADERFX")
 
         layout.label(text="Use shape keys to drive ear bones")

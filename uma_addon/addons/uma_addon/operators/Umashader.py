@@ -12,13 +12,18 @@ from ..config import __addon_name__
 from ..utils.Utils import find_file_by_keywords
 
 # The central shading control (one place to set the look, per-character overrides) lives in its own file so it can
-# be removed on its own; the panel still draws and Shading still runs without it.
+# be removed on its own; the panel still draws and Shading still runs without it. Same for the face-normal step.
 try:
     from .UmaShaderControl import hook as hook_shader_control
     from .UmaShaderControl import TAG as SHADER_CONTROL_TAG
 except ImportError:  # pragma: no cover - only when that file is deleted
     hook_shader_control = None
     SHADER_CONTROL_TAG = "look-0"
+
+try:
+    from .FaceNormals import apply_face_normals
+except ImportError:  # pragma: no cover - only when that file is deleted
+    apply_face_normals = None
 
 
 def set_modifier_input(modifier, name, identifier, value):
@@ -405,5 +410,29 @@ class ApplyShader(bpy.types.Operator):
             for note in report.get("notes", []):
                 print("[uma_addon] %s: %s" % (SHADER_CONTROL_TAG, note))
 
+
+        # The face normals step (see operators/FaceNormals.py): a hidden static copy of the face plus a data
+        # transfer of its custom split normals, so a facial morph does not drag the face's shading normals
+        # with it. On by default and switchable in the panel - the manual setup it automates is the usual
+        # one - and it must never take the shading run down with it, so anything it raises is reported and
+        # the run carries on.
+        if bool(getattr(getattr(context.scene, "uma_scene", None), "face_normals", False)) \
+                and apply_face_normals is not None:
+            try:
+                face_report = apply_face_normals(context)
+                done = [entry for entry in face_report["targets"] if not entry.get("skipped")]
+                for entry in done:
+                    print("[uma_addon] %s: %s %s a static copy, transfer on %s%s"
+                          % (face_report["tag"], entry["object"], entry["copy"], entry["modifier"],
+                             "" if not entry.get("limited_to_group")
+                             else " limited to %s" % entry["limited_to_group"]))
+                for note in face_report["notes"]:
+                    print("[uma_addon] %s: %s" % (face_report["tag"], note))
+                if not done:
+                    print("[uma_addon] %s: no face found, so no normal transfer was set up"
+                          % face_report["tag"])
+            except Exception as error:  # noqa: BLE001 - never take the shading run down
+                print("[uma_addon] face normal transfer failed (%s: %s); the shading is applied without "
+                      "it" % (type(error).__name__, error))
         self.report({'INFO'}, "Uma shader applied")
         return {'FINISHED'}
