@@ -79,14 +79,16 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # The history that used to live here - 227 lines of it, one paragraph per build going back to chains-8 - was also
 # printed into every trace, which is a lot of prose in the one line whose job is to say which build ran. It is all
 # in `docs/RIGIFY_CHAINS_HANDOFF.md` (9a-9av), which is where it is readable. Bump BUILD_TAG on every change.
-BUILD_TAG = "chains-43"
+BUILD_TAG = "chains-44"
 BUILD = BUILD_TAG + (
-    ": a leftover MMR metarig template is refused up front instead of failing inside MMR mid-run (chains-41), and "
-    "the addon is smaller - the Tanuki GIF shader nodes, Pillow, the pip buttons and the install-time network "
-    "permission are gone, so nothing walks material node trees on every frame change any more, and the Change Head "
-    "panel and its four operators followed them (strip batches 1a and 1c: 48 registered operators and 4 panels "
-    "now, against 55 and 5 before). See handoff 9av.2 and 9av.3 for the measurements behind the refusal and each "
-    "removal")
+    ": the presets work again - the `Preset` dropdown's update callback is handed Blender's properties wrapper "
+    "rather than the operator, so it has no methods, and `sync_preset` asked it for one (AttributeError out of an "
+    "RNA update, which is the reported \"I've never managed to get the presets working\"); the model lookup is a "
+    "module-level function now. Before that: a leftover MMR metarig template is refused up front instead of failing "
+    "inside MMR mid-run (chains-41), and the addon is smaller - the Tanuki GIF shader nodes, Pillow, the pip "
+    "buttons and the install-time network permission are gone, so nothing walks material node trees on every frame "
+    "change any more, and the Change Head panel and its four operators followed them (strip batches 1a and 1c: 48 "
+    "registered operators and 4 panels now, against 55 and 5 before)")
 
 # What the rules fall back to when no file exists. A type rule matches at the start of a bone name, a skip
 # rule matches anywhere, and the first rule that matches a bone wins. Patterns are matched against the
@@ -1347,6 +1349,47 @@ def apply_preset_update(self, context):
     sync_preset(self, context)
 
 
+def find_model_armature(context, trace=None):
+    """The MMD armature: a mesh is skinned to it and it is not a generated control rig.
+
+    A **module-level** function rather than only a method, and that is the fix for the preset bug the user
+    reported (*"I've never managed to get the presets working"*): an RNA `update` callback is handed the operator's
+    *properties wrapper* (`bpy.types.UMA_OT_rigify_chains`, MRO `OperatorProperties`), not the live Python
+    operator, so it has no methods at all. Measured in `preset_callback_identity_check.py` - inside the callback,
+    `hasattr(self, "_find_model_armature")` is False while the same name is on the class. `sync_preset` is that
+    callback's whole body, and it used to ask `self` for the model; the exception came out of an RNA update during
+    a dialog and took Blender down with it (`EXCEPTION_ACCESS_VIOLATION`) after printing
+    `AttributeError: 'UMA_OT_rigify_chains' object has no attribute '_find_model_armature'`.
+
+    Everything reachable from an `update` callback therefore has to work with RNA properties and module functions
+    only. `context` and the operator's `Families`/`Preset`/`Populating` fields are all fine there.
+    """
+    trace = trace or Trace(False)
+    bound = {}
+    for obj in context.scene.objects:
+        if obj.type != 'MESH':
+            continue
+        for modifier in obj.modifiers:
+            if modifier.type == 'ARMATURE' and modifier.object is not None:
+                bound.setdefault(modifier.object.name, []).append(obj.name)
+    candidates = [o for o in context.scene.objects
+                  if o.type == 'ARMATURE'
+                  and not any(bone.name.startswith(GENERATED_PREFIXES) for bone in o.data.bones)]
+    # `view_layer.objects.active` rather than `context.active_object`: with two models in one file the two can
+    # disagree (a script, or a context copy, can leave `active_object` empty), and then the run silently falls back
+    # to "the first armature with a mesh" - which is the *other* model (handoff 9aj).
+    active = getattr(context.view_layer.objects, "active", None) or context.active_object
+    if active in candidates:
+        return active, bound.get(active.name, [])
+    with_mesh = [o for o in candidates if bound.get(o.name)]
+    if with_mesh:
+        return with_mesh[0], bound.get(with_mesh[0].name, [])
+    if candidates:
+        return candidates[0], []
+    trace.check("model armature found", False, "no armature in the scene is skinned to a mesh")
+    return None, []
+
+
 def sync_preset(self, context):
     """Fill the family rows from `Preset`, if they have not already been filled from it.
 
@@ -1389,7 +1432,10 @@ def sync_preset(self, context):
     # A preset keyed for another costume may only decide hair by default (`options.preset_cross_costume`): the
     # autodetect behind such a preset compares hair skeletons, and physics differ per costume. The model's
     # identity is what says whether the preset is this model's or a relative's.
-    model_for_identity, _meshes = self._find_model_armature(context, Trace(False))
+    #
+    # The module-level function, not `self._find_model_armature`: this runs inside an RNA `update` callback, where
+    # `self` is the properties wrapper and has no methods (see `find_model_armature`).
+    model_for_identity, _meshes = find_model_armature(context, Trace(False))
     identity, _bone = model_identity(model_for_identity) if model_for_identity is not None else (None, None)
     modes, table_modes, label = family_defaults(rules, presets, self.Preset, self.Families, identity,
                                                 str(options.get("preset_cross_costume", "hair")).lower(),
@@ -1907,29 +1953,8 @@ class RigifyChains(bpy.types.Operator):
         return any(bone.name.startswith(GENERATED_PREFIXES) for bone in obj.data.bones)
 
     def _find_model_armature(self, context, trace):
-        """The MMD armature: a mesh is skinned to it and it is not a generated control rig."""
-        bound = {}
-        for obj in context.scene.objects:
-            if obj.type != 'MESH':
-                continue
-            for modifier in obj.modifiers:
-                if modifier.type == 'ARMATURE' and modifier.object is not None:
-                    bound.setdefault(modifier.object.name, []).append(obj.name)
-        candidates = [o for o in context.scene.objects
-                      if o.type == 'ARMATURE' and not self._looks_like_control_rig(o)]
-        # `view_layer.objects.active` rather than `context.active_object`: with two models in one file the two
-        # can disagree (a script, or a context copy, can leave `active_object` empty), and then the run silently
-        # falls back to "the first armature with a mesh" - which is the *other* model (handoff 9aj).
-        active = getattr(context.view_layer.objects, "active", None) or context.active_object
-        if active in candidates:
-            return active, bound.get(active.name, [])
-        with_mesh = [o for o in candidates if bound.get(o.name)]
-        if with_mesh:
-            return with_mesh[0], bound.get(with_mesh[0].name, [])
-        if candidates:
-            return candidates[0], []
-        trace.check("model armature found", False, "no armature in the scene is skinned to a mesh")
-        return None, []
+        """The MMD armature, found the way the module-level function does (see `find_model_armature`)."""
+        return find_model_armature(context, trace)
 
     @staticmethod
     def _generated_rig_candidates(model):
