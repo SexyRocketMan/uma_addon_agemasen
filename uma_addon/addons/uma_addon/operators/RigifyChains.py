@@ -83,9 +83,13 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-50"
+BUILD_TAG = "chains-51"
 BUILD = BUILD_TAG + (
-    ": the shading control ships as 2.11.0 - one place to set the look of every uma (global values on the sun "
+    ": 2.12.0 - \"Agemasen edition\" (the manifest, the README and the line this addon prints at load), a "
+    "second maintainer, and the face-normal step shipping on by default beside the shading options: a hidden "
+    "static copy of the face with its custom normals transferred, so a morph stops dragging the shading with "
+    "it, and the scene checkbox turns it off. Before that: the shading control shipped as 2.11.0 - one place to "
+    "set the look of every uma (global values on the sun "
     "empty, per-character overrides on her root empty, a driver per setting per material copy), a panel that "
     "follows the selection with sections matching the shader's own layout, a master override switch and resets. "
     "Before that: the rig presets work again (their dropdown's update callback is handed Blender's properties "

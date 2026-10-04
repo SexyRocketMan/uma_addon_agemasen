@@ -20,10 +20,10 @@ bl_info = {
     "tracker_url": "https://www.bilibili.com/opus/1101994702993883141",
 }
 
-# Marker for the Agemasen build of this addon (the fork that goes with
+# Marker for the Agemasen edition of this addon (the fork that goes with
 # https://github.com/SexyRocketMan/UmaViewer-PMX-Export-Patch). Bump it whenever the fork's changes land,
 # so the build Blender actually loaded can be identified.
-AGEMASEN_BUILD = "agemasen-1 (unified morph naming, eye control guard, MikuMikuRig guard)"
+AGEMASEN_EDITION = "agemasen edition (Pumpkin Rig, one-control shading, face normals for morphs)"
 
 _addon_properties = {
     bpy.types.Scene: {
@@ -78,8 +78,8 @@ def register():
     # Say which build this is: the Agemasen fork gets installed through several paths (an extension, a
     # scratch extension root, a legacy addons folder), and "which one is Blender running" is otherwise
     # impossible to answer from inside Blender.
-    print("{} build {}, loaded from {}".format(
-        __addon_name__, AGEMASEN_BUILD, os.path.dirname(os.path.abspath(__file__))))
+    print("{} {}, loaded from {}".format(
+        __addon_name__, AGEMASEN_EDITION, os.path.dirname(os.path.abspath(__file__))))
 
 def unregister():
     bpy.types.VIEW3D_MT_object_context_menu.remove(View3dObject_menu)

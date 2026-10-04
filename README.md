@@ -1,15 +1,26 @@
 # Blender-Uma-Addon
 
-## Agemasen build
+## Agemasen edition
 
-This is the **Agemasen build** of the addon: the fork that goes with the
+**Agemasen edition** is the fork of this addon that goes with the
 [UmaViewer PMX Export Patch](https://github.com/SexyRocketMan/UmaViewer-PMX-Export-Patch) (the "Ultimate
 Agemasen Edition" fork of umaviewer).
 
-It is a clean rebuild. The upstream addon at commit `a6de9e1` is the base, and on top of it sit exactly two
-things: the fork's Agemasen naming compatibility, and a compatibility layer that lets one code base run on
-Blender **4.2 through 5.2**. `git diff a6de9e1 HEAD` is the complete list of changes, and it is deliberately
-small - about 1600 lines, most of it documentation and the shader.
+It is a clean rebuild. The upstream addon at commit `a6de9e1` is the base. Against that base, this edition
+adds three things:
+
+* **one place to build the rig**: *Pumpkin Rig Setup* runs MikuMikuRig's generation and then adds rigify
+  chains for the hair, ears, skirt, chest, tail and ribbon bones, typed by a rules table with per-character
+  presets and drawn in the animator's own display style;
+* **one place to set the look**: the 18 shader settings live on the sun empty, a per-character override sits on
+  each uma's root empty, and one driver per setting per material copy keeps every uma in the scene in step;
+* **face normals that survive morphs**: an optional step keeps a hidden static copy of the face and transfers its
+  custom normals, so a facial morph stops dragging the shading with it.
+
+Everything else is upstream, minus a few things this workflow does not use - the Tanuki GIF shader nodes, Pillow
+and its pip buttons, the install-time network permission, and Change Head.
+
+The rest of the fork's own notes - naming, version compatibility, the outline checkbox and packaging - are below.
 
 * **Morph naming** (`uma_addon/addons/uma_addon/utils/naming.py`): shape keys are asked for by meaning, so all
   three UmaViewer spellings resolve - `EyeBrow_1_R(WaraiA)[M_Face]`, `EyeBrow_1_R`, `Brow_WaraiA_R` - where
@@ -31,8 +42,8 @@ small - about 1600 lines, most of it documentation and the shader.
   ("archive has no manifest") and falls back to the legacy installer - which needs the addon to import
   correctly from `scripts/addons`, and it does.
 
-If Blender's console prints `UMA Addon build agemasen-1 ... loaded from <path>` after enabling, that is
-this build, and the path tells you which copy of several possible installs is being used.
+If Blender's console prints `UMA Addon agemasen edition ... loaded from <path>` after enabling, that is
+this edition, and the path tells you which copy of several possible installs is being used.
 
 The rest of this file is the upstream documentation.
 
