@@ -27,8 +27,7 @@ Open the **UMA** panel in the 3D viewport sidebar and look for **Shading - All U
 |---|---|
 | **Hook up the shading control** | Puts the drivers on every copy of every character. `Shading` already does this for you, so this is for a file that was baked, or made before this feature existed |
 | **Bake into materials** | Writes the current values into the materials and removes the drivers - do this before exporting or handing the file on |
-| **The panel follows the selection** | Select anything that belongs to a character — her root empty (`1004_00`), her mesh, her armature — and the panel shows *her* values. Select nothing (or something else) and it shows the global ones. The two are never on screen together |
-| **Showing: This uma / Global** | The switch that appears while a character is selected, for when you want the global values without changing the selection |
+| **The panel follows the selection** | Select anything that belongs to a character — her root empty (`1004_00`), her mesh, her armature — and the panel shows *her* values. Select nothing (or something else) and it shows the global ones. The two are never on screen together - to reach the global values while a character is selected, select something that is not hers (the sun empty, or nothing at all) |
 | **This uma has her own values** | The master switch for the selected character. On: every setting becomes hers, seeded with the global's current numbers — so switching it on changes nothing on screen, and you can then move what you need. Off: every setting goes back to following the global |
 | **All umas in this scene** | The global sliders: 12 numbers and 6 colours. Every character without an override follows these |
 | the padlock on a row | For one setting only: `LOCKED` = this character follows the global (the row says `global`). Click to give her her own value, which starts from what she shows right now. Click again to go back to following |

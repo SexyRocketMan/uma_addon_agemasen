@@ -758,23 +758,6 @@ class ShaderControlOverride(Operator):
         _settle(context, sun_object(context), root)
         return {'FINISHED'}
 
-class ShaderControlView(Operator):
-    """Which settings the panel shows: the selected uma's own, or the global ones"""
-    bl_idname = "uma.shader_view"
-    bl_label = "Global or this uma"
-    bl_description = ("The panel follows the selection: with an uma selected it shows her own values, otherwise it "
-                      "shows the global ones. This switches to the other view without changing the selection")
-    bl_options = {'INTERNAL'}
-
-    global_view: BoolProperty(name="Global", default=True)
-
-    def execute(self, context):
-        scene_props = getattr(context.scene, "uma_scene", None)
-        if scene_props is None:
-            return {'CANCELLED'}
-        scene_props.shader_show_global = bool(self.global_view)
-        return {'FINISHED'}
-
 
 class ShaderControlOverrideAll(Operator):
     """Give this uma her own values (starting from the global), or put her back on the global
@@ -1055,15 +1038,9 @@ def draw_shading_control(layout, context):
     root, objects = character_objects(context)
     materials = character_materials(objects) if objects else []
     character = root if (root is not None and materials) else None
-    show_global = bool(getattr(scene_props, "shader_show_global", False)) or character is None
-
-    if character is not None:
-        row = layout.row(align=True)
-        row.label(text="Showing")
-        this_uma = row.operator(ShaderControlView.bl_idname, text="This uma", depress=not show_global)
-        this_uma.global_view = False
-        global_view = row.operator(ShaderControlView.bl_idname, text="Global", depress=show_global)
-        global_view.global_view = True
+    # No switch and no stored view state: a character selected *is* her panel, anything else is the global one. To
+    # reach the global values while a character is selected, select something that is not hers.
+    show_global = character is None
 
     if show_global:
         box = layout.box()
@@ -1078,8 +1055,6 @@ def draw_shading_control(layout, context):
             box.label(text="Select a uma (her root empty, mesh or armature) for her own values", icon='INFO')
         return
 
-    if show_global:
-        return
     box = layout.box()
     box.label(text="Shading for %s" % character.name, icon='OBJECT_DATA')
     ensure_properties(character, KEYS, inherit=True)
