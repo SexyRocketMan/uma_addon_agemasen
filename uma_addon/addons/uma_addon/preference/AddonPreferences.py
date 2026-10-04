@@ -8,9 +8,14 @@ from ..config import __addon_name__
 from ..operators.Properties import EarTargets, AllActions
 from ..operators.Dependencies import is_pillow_available
 from ..utils.Config_handling import get_config_parameter, set_config_parameter, get_panel_name
-from ..panels.AddonPanels import ModelProcessPanel, ControllerPanel, ChangeHeadPanel, PhysicsandActionsPanel
+from ..panels.AddonPanels import (ModelProcessPanel, ControllerPanel, ChangeHeadPanel, PhysicsandActionsPanel,
+                                  ShadingLookPanel)
 
-UI_PANELS = [ModelProcessPanel, ControllerPanel, ChangeHeadPanel, PhysicsandActionsPanel]
+#: Every panel whose sidebar category the `panel_name` preference rewrites. The list has to be complete: a panel
+#: missing from it keeps the old category until Blender restarts, which is how "Shading - All Umas" was left
+#: behind in a renamed sidebar (found by the feature inventory, fixed here - it is a top-level panel, so unlike a
+#: child panel its category is its own).
+UI_PANELS = [ModelProcessPanel, ControllerPanel, ChangeHeadPanel, PhysicsandActionsPanel, ShadingLookPanel]
 
 class AddonPreferences(AddonPreferences):
     # this must match the add-on name (the folder name of the unzipped file)

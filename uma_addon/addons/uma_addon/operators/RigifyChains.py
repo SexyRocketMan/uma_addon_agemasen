@@ -75,7 +75,7 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # Blender keeps a loaded add-on module in memory until it is disabled/enabled or Blender restarts, so an
 # edited file on disk changes nothing until then - that is what the version report after every run is for.
 # Bump BUILD_TAG on every change, and keep it the first word of BUILD.
-BUILD_TAG = "chains-40"
+BUILD_TAG = "chains-41"
 BUILD = ("chains-40: the run reports where its own time went. Reported by the user - *\"the second character did "
          "finish generating the rig properly, but it seemed to take much longer\"* - with a trace whose only "
          "timing was `done in 48.2s`, which cannot tell \"MMR is slower with two characters in the file\" from "
@@ -1293,13 +1293,19 @@ def resolve_rule_modes(model, rules, family_modes, table_modes, fixed, never, tr
 
 
 def show_collection(collection, visible=True):
-    """A bone collection this operator creates must be selectable, and visible unless it is a sub-layer.
+    """Hide or show one of the collections this operator creates, unless it is a sub-layer.
 
     `visible=False` is for the `<Family> (FK)` / `<Family> (Tweak)` siblings: measured on a run with all of them
     shown, 282 of the 1259 generated bones are drawn and 99 of those are sub-layers nobody has asked for
     (`Skirt (Tweak)` alone is 30, `Chest (Tweak)` 24). Rigify treats its own tweak layers the same way - its
-    `Arm.L (Tweak)` and `Leg.L (Tweak)` are hidden - so hiding ours matches the rig it sits in, and the layer
-    stays selectable so a click in the N-panel brings it back. See `Chain_Layers`.
+    `Arm.L (Tweak)` and `Leg.L (Tweak)` are hidden - so hiding ours matches the rig it sits in. See
+    `Chain_Layers`.
+
+    **The `is_selectable` half of this does nothing, and never did.** A dead-code audit measured
+    `BoneCollection` on 4.2, 4.5 and 5.2 and there is no such property on any of them, so the `hasattr` guard
+    skips it every time - the earlier comment here claimed the hidden layers "stay selectable so a click in the
+    N-panel brings it back", which was never true. A hidden collection is brought back from the N-panel the way
+    Blender does it for any bone collection, and the only thing this function actually does is `is_visible`.
     """
     for attribute, value in (("is_visible", visible), ("is_selectable", True)):
         if hasattr(collection, attribute):
@@ -3989,6 +3995,28 @@ class RigifyChains(bpy.types.Operator):
                                        "to. Use the rules with MMR installed, or Step = Wire only. [%s]"
                             % BUILD_TAG)
                 return {'CANCELLED'}
+            # MMR appends its metarig template only when no object of that name exists (`Controller.py:88`), and
+            # rigify consumes the template when a run finishes (`:1034-1037`) - so a finished run leaves nothing
+            # behind, which is why running this twice in a row is fine. What a run that *did not finish* leaves
+            # behind is the template itself, and measured (`mmr_second_pass_check.py`, mode `leftover`): handing
+            # an existing template to MMR fails inside MMR with `AttributeError: 'NoneType' object has no
+            # attribute 'name'` while it renames a rig it cannot find, surfacing here as an opaque "Rigify chains
+            # failed". Our step always generates from scratch, so a leftover is not something it can use - refuse
+            # before touching the model, name the object, and say both ways out.
+            leftover = bpy.data.objects.get("MMR_Rig_relative")
+            if leftover is not None:
+                message = ("This file already contains MMR's metarig template 'MMR_Rig_relative', which is "
+                           "normally left behind by an MMR run that did not finish. MMR reuses an existing "
+                           "template instead of appending a fresh one and the run then fails inside MMR, so this "
+                           "operator stops here rather than failing halfway. Delete that object (or re-import "
+                           "the model) and run this again. Nothing was changed. [%s]" % BUILD_TAG)
+                trace.check("no leftover MMR metarig template in the file", False,
+                            "'MMR_Rig_relative' is already in this file")
+                trace.info(message)
+                trace.save()
+                self.report({'ERROR'}, message)
+                return {'CANCELLED'}
+            trace.check("no leftover MMR metarig template in the file", True, "nothing to reuse")
             if "rigify" not in context.preferences.addons:
                 try:
                     bpy.ops.preferences.addon_enable(module="rigify")
