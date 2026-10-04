@@ -68,23 +68,6 @@ class ModelProcessPanel(BasePanel, bpy.types.Panel):
         split.prop_search(scene_props, "ear_target", prefs, "ear_targets")
         split.operator(EarConvert.bl_idname, icon="DRIVER")
 
-class ChangeHeadPanel(BasePanel, bpy.types.Panel):
-    bl_label = "Change Head"
-    bl_idname = "SCENE_PT_umaaddonpanel2"
-    bl_parent_id = "SCENE_PT_umaaddonpanel1"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context: bpy.types.Context):
-        layout = self.layout
-        
-        row = layout.row()
-        row.operator(ChangeHeadPretreat.bl_idname)
-        row.operator(ChangeHeadHoldout.bl_idname)
-        layout.label(text="Create a new absolute shape key:")
-        row = layout.row()
-        row.operator(ChangeHeadNewShape.bl_idname)        
-        row.operator(ChangeHeadCopyShape.bl_idname)
-
 class UMA_UL_Action(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index, flt_flag):
         row = layout.row(align=True)

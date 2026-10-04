@@ -79,12 +79,14 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # The history that used to live here - 227 lines of it, one paragraph per build going back to chains-8 - was also
 # printed into every trace, which is a lot of prose in the one line whose job is to say which build ran. It is all
 # in `docs/RIGIFY_CHAINS_HANDOFF.md` (9a-9av), which is where it is readable. Bump BUILD_TAG on every change.
-BUILD_TAG = "chains-42"
+BUILD_TAG = "chains-43"
 BUILD = BUILD_TAG + (
     ": a leftover MMR metarig template is refused up front instead of failing inside MMR mid-run (chains-41), and "
-    "the addon is smaller: the Tanuki GIF shader nodes, Pillow, the pip buttons and the install-time network "
-    "permission are gone, so nothing walks material node trees on every frame change any more (strip batch 1a). "
-    "See handoff 9av.2 for the measurement behind the refusal and the commit for the removal")
+    "the addon is smaller - the Tanuki GIF shader nodes, Pillow, the pip buttons and the install-time network "
+    "permission are gone, so nothing walks material node trees on every frame change any more, and the Change Head "
+    "panel and its four operators followed them (strip batches 1a and 1c: 48 registered operators and 4 panels "
+    "now, against 55 and 5 before). See handoff 9av.2 and 9av.3 for the measurements behind the refusal and each "
+    "removal")
 
 # What the rules fall back to when no file exists. A type rule matches at the start of a bone name, a skip
 # rule matches anywhere, and the first rule that matches a bone wins. Patterns are matched against the
