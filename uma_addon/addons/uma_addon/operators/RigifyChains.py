@@ -78,17 +78,21 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 #
 # The history that used to live here - 227 lines of it, one paragraph per build going back to chains-8 - was also
 # printed into every trace, which is a lot of prose in the one line whose job is to say which build ran. It is all
-# in `docs/RIGIFY_CHAINS_HANDOFF.md` (9a-9av), which is where it is readable. Bump BUILD_TAG on every change.
-BUILD_TAG = "chains-44"
+# in `docs/RIGIFY_CHAINS_HANDOFF.md` (9a-9av), which is where it is readable. Bump BUILD_TAG on every change -
+# including changes in the *other* files: chains-45 to chains-50 were sections, the shading panel's two views, the
+# master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
+# left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
+# the whole build, not this file.
+BUILD_TAG = "chains-50"
 BUILD = BUILD_TAG + (
-    ": the presets work again - the `Preset` dropdown's update callback is handed Blender's properties wrapper "
-    "rather than the operator, so it has no methods, and `sync_preset` asked it for one (AttributeError out of an "
-    "RNA update, which is the reported \"I've never managed to get the presets working\"); the model lookup is a "
-    "module-level function now. Before that: a leftover MMR metarig template is refused up front instead of failing "
-    "inside MMR mid-run (chains-41), and the addon is smaller - the Tanuki GIF shader nodes, Pillow, the pip "
-    "buttons and the install-time network permission are gone, so nothing walks material node trees on every frame "
-    "change any more, and the Change Head panel and its four operators followed them (strip batches 1a and 1c: 48 "
-    "registered operators and 4 panels now, against 55 and 5 before)")
+    ": the shading control ships as 2.11.0 - one place to set the look of every uma (global values on the sun "
+    "empty, per-character overrides on her root empty, a driver per setting per material copy), a panel that "
+    "follows the selection with sections matching the shader's own layout, a master override switch and resets. "
+    "Before that: the rig presets work again (their dropdown's update callback is handed Blender's properties "
+    "wrapper, not the operator, so `sync_preset` called a method that was not there), the action library lists and "
+    "applies again, a leftover MMR metarig template is refused up front, and the addon is smaller - the Tanuki GIF "
+    "shader nodes, Pillow, the pip buttons and the install-time network permission are gone, along with Change Head "
+    "(48 registered operators and 4 panels, against 55 and 5)")
 
 # What the rules fall back to when no file exists. A type rule matches at the start of a bone name, a skip
 # rule matches anywhere, and the first rule that matches a bone wins. Patterns are matched against the
