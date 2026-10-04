@@ -183,17 +183,32 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
                     if scene_props.level3 != "None":
                         row.prop(scene_props, "level3")
 
-            if scene_props.filtered_actions:
-                curr_item = scene_props.filtered_actions[scene_props.action_index]
-                fav_icon = 'FUND' if curr_item.is_favorite else 'HEART'
-            else:
-                fav_icon = 'HEART'
-            # the list is built by the filter updates, so a scene nobody has touched has none: fill it here, once
+            # `action_index` is a scene property, so it outlives the list it pointed into: switch from a level with
+            # 1156 rows to one with a single row and the old index is past the end. Reading it unguarded raised
+            # `IndexError: bpy_prop_collection[index]: index 40 out of range, size 1` out of `draw`, and Blender
+            # stops a panel where it stopped - which is the reported "the list of actions is gone now, just the
+            # dropdown selectors are rendered". Clamped here, and the list is only read when it has rows.
+            def selected_action():
+                if not len(scene_props.filtered_actions):
+                    return None
+                index = min(max(scene_props.action_index, 0), len(scene_props.filtered_actions) - 1)
+                if index != scene_props.action_index:
+                    scene_props.action_index = index
+                return scene_props.filtered_actions[index]
+
+            current = selected_action()
+            fav_icon = 'FUND' if (current is not None and current.is_favorite) else 'HEART'
+            # the list is built by the filter updates, so a scene nobody has touched has none: fill it here, once.
+            # A panel must never raise (Blender truncates it at the exception), so a failing fill is reported and
+            # the panel carries on with whatever the list holds.
             if not scene_props.action_list_filled:
-                ensure_action_list(scene_props, context)
-                if scene_props.filtered_actions:
-                    curr_item = scene_props.filtered_actions[scene_props.action_index]
-                    fav_icon = 'FUND' if curr_item.is_favorite else 'HEART'
+                try:
+                    ensure_action_list(scene_props, context)
+                except Exception as error:  # noqa: BLE001
+                    print("[uma_addon] could not build the action list (%s: %s); the panel keeps what it has"
+                          % (type(error).__name__, error))
+                current = selected_action()
+                fav_icon = 'FUND' if (current is not None and current.is_favorite) else 'HEART'
             row = layout.row()
             col = row.column(align=True)
             box = col.box()
