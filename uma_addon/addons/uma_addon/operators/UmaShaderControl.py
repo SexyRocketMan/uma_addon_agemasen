@@ -758,48 +758,141 @@ class ShaderControlOverride(Operator):
         _settle(context, sun_object(context), root)
         return {'FINISHED'}
 
+class ShaderControlView(Operator):
+    """Which settings the panel shows: the selected uma's own, or the global ones"""
+    bl_idname = "uma.shader_view"
+    bl_label = "Global or this uma"
+    bl_description = ("The panel follows the selection: with an uma selected it shows her own values, otherwise it "
+                      "shows the global ones. This switches to the other view without changing the selection")
+    bl_options = {'INTERNAL'}
 
-class ShaderControlCopyGlobal(Operator):
-    """Give this character every global value, as a known starting point for its own look"""
-    bl_idname = "uma.shader_copy_global"
-    bl_label = "Copy the global values to this character"
+    global_view: BoolProperty(name="Global", default=True)
+
+    def execute(self, context):
+        scene_props = getattr(context.scene, "uma_scene", None)
+        if scene_props is None:
+            return {'CANCELLED'}
+        scene_props.shader_show_global = bool(self.global_view)
+        return {'FINISHED'}
+
+
+class ShaderControlOverrideAll(Operator):
+    """Give this uma her own values (starting from the global), or put her back on the global
+
+    The one switch that replaces per-setting padlocks for the common case: on, every setting becomes this
+    character's own - seeded with the global's current numbers, so switching it on changes nothing on screen - and
+    off, every setting goes back to following. The per-row padlocks stay for the case of one setting that has to
+    differ.
+    """
+    bl_idname = "uma.shader_override_all"
+    bl_label = "This uma has her own values"
     bl_options = {'REGISTER', 'UNDO'}
+
+    on: BoolProperty(name="Own values", default=True)
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
 
     def execute(self, context):
         root, _objects = character_objects(context)
         sun = sun_object(context)
         if root is None or sun is None:
-            self.report({'ERROR'}, "Select a character and run Shading first")
+            self.report({'ERROR'}, "Select a uma first (her root empty, mesh or armature)")
             return {'CANCELLED'}
         ensure_properties(root, KEYS, inherit=True)
+        changed = 0
         for key in KEYS:
             setting = SETTING_BY_KEY[key]
-            value = read_value(sun, key, setting)
-            if value is None:
-                value = setting["default"]
-            write_value(root, key, value)
+            current = read_value(root, key, setting)
+            if self.on:
+                if is_inheriting(current, setting):
+                    value = read_value(sun, key, setting)
+                    write_value(root, key, value if value is not None else setting["default"])
+                    changed += 1
+            elif not is_inheriting(current, setting):
+                write_value(root, key, INHERIT if setting["kind"] == "number" else (INHERIT,) * 4)
+                changed += 1
         _settle(context, sun, root)
-        self.report({'INFO'}, "%s now holds the global values as its own" % root.name)
+        if self.on:
+            self.report({'INFO'}, "%s now holds the global values as her own (%d setting(s))" % (root.name, changed))
+        else:
+            self.report({'INFO'}, "%s follows the global everywhere again (%d override(s) removed)"
+                        % (root.name, changed))
         return {'FINISHED'}
 
 
-class ShaderControlFollowGlobal(Operator):
-    """Put every one of this character's settings back to following the global"""
-    bl_idname = "uma.shader_follow_global"
-    bl_label = "Follow the global everywhere"
+class ShaderControlResetRow(Operator):
+    """Put one setting back: to the global's value here, or to the shader's own default globally"""
+    bl_idname = "uma.shader_reset_row"
+    bl_label = "Reset this setting"
     bl_options = {'REGISTER', 'UNDO'}
 
+    key: StringProperty(name="Setting")
+    local: BoolProperty(name="This uma", default=True)
+
     def execute(self, context):
+        setting = SETTING_BY_KEY.get(self.key)
+        if setting is None:
+            self.report({'ERROR'}, "Unknown shading setting %r" % self.key)
+            return {'CANCELLED'}
+        sun = sun_object(context)
+        if sun is None:
+            self.report({'ERROR'}, "No uma shader in this scene yet")
+            return {'CANCELLED'}
+        if not self.local:
+            write_value(sun, self.key, setting["default"])
+            _settle(context, sun)
+            self.report({'INFO'}, "%s back to the shader's own default (%s)"
+                        % (setting["input"], setting["default"]))
+            return {'FINISHED'}
         root, _objects = character_objects(context)
         if root is None:
-            self.report({'ERROR'}, "Select a character")
+            self.report({'ERROR'}, "Select a uma first")
             return {'CANCELLED'}
-        ensure_properties(root, KEYS, inherit=True)
-        for key in KEYS:
-            setting = SETTING_BY_KEY[key]
-            write_value(root, key, INHERIT if setting["kind"] == "number" else (INHERIT,) * 4)
-        _settle(context, sun_object(context), root)
-        self.report({'INFO'}, "%s follows the global shading everywhere again" % root.name)
+        ensure_properties(root, (self.key,), inherit=True)
+        value = read_value(sun, self.key, setting)
+        write_value(root, self.key, value if value is not None else setting["default"])
+        _settle(context, sun, root)
+        self.report({'INFO'}, "%s: %s is back to the global value" % (root.name, setting["input"]))
+        return {'FINISHED'}
+
+
+class ShaderControlResetSection(Operator):
+    """Put a whole group back: all of it on the global here, or all of it at the defaults globally"""
+    bl_idname = "uma.shader_reset_section"
+    bl_label = "Reset this group"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    section: StringProperty(name="Group")
+    local: BoolProperty(name="This uma", default=True)
+
+    def execute(self, context):
+        keys = section_keys(self.section)
+        if not keys:
+            self.report({'ERROR'}, "Unknown shading group %r" % self.section)
+            return {'CANCELLED'}
+        sun = sun_object(context)
+        if sun is None:
+            self.report({'ERROR'}, "No uma shader in this scene yet")
+            return {'CANCELLED'}
+        if not self.local:
+            for key in keys:
+                write_value(sun, key, SETTING_BY_KEY[key]["default"])
+            _settle(context, sun)
+            self.report({'INFO'}, "%d setting(s) in %s back to the shader's own defaults"
+                        % (len(keys), self.section))
+            return {'FINISHED'}
+        root, _objects = character_objects(context)
+        if root is None:
+            self.report({'ERROR'}, "Select a uma first")
+            return {'CANCELLED'}
+        ensure_properties(root, keys, inherit=True)
+        for key in keys:
+            write_value(root, key, INHERIT if SETTING_BY_KEY[key]["kind"] == "number" else (INHERIT,) * 4)
+        _settle(context, sun, root)
+        self.report({'INFO'}, "%s follows the global again for all %d setting(s) in %s"
+                    % (root.name, len(keys), self.section))
         return {'FINISHED'}
 
 
@@ -825,15 +918,56 @@ class ShaderControlSection(Operator):
 
 
 # --- the panel -----------------------------------------------------------------------------------------
+#
+# The panel is a *view* of the properties, never a second copy of them: every row is `layout.prop(host,
+# '["uma_shader_x"]')` on the object the drivers read, so there is nothing to sync and the whole mechanism keeps
+# working with the extension switched off. That is also why the grouping and the order live here rather than in the
+# data - Blender's own Custom Properties list can neither be grouped nor ordered (it sorts, and the only handle on
+# a property offers `as_dict/clear/update/update_from`), so a panel is the only place this can come from.
+#
+# What the panel shows follows the **selection** (the user's request): with an object of a character's hierarchy
+# selected - her root empty, her mesh, her armature - it shows *her* values; otherwise it shows the global ones.
+# The two views are never on screen together, and the `This uma` / `Global` row switches between them for the case
+# of wanting the global while a character is selected.
 
-def _draw_setting_row(layout, host, key):
-    """One global row: the setting's own name, and its value."""
+def override_count(root):
+    """How many of this character's settings are her own rather than following the global."""
+    if root is None:
+        return 0
+    count = 0
+    for key in KEYS:
+        setting = SETTING_BY_KEY[key]
+        if not is_inheriting(read_value(root, key, setting), setting):
+            count += 1
+    return count
+
+
+def _differs(value, reference, setting):
+    """Does a value differ from a reference one, with a tolerance that suits a slider?"""
+    if value is None or reference is None:
+        return False
+    if setting["kind"] == "colour":
+        return any(abs(float(a) - float(b)) > 1e-6 for a, b in zip(value, reference))
+    return abs(float(value) - float(reference)) > 1e-6
+
+
+def _draw_global_row(layout, sun, key):
+    """One global row: the setting's own name, its value, and a reset once it is no longer the shader's default."""
     setting = SETTING_BY_KEY[key]
-    layout.prop(host, '["%s"]' % key, text=setting["input"], slider=setting["kind"] == "number")
+    row = layout.row(align=True)
+    row.prop(sun, '["%s"]' % key, text=setting["input"], slider=setting["kind"] == "number")
+    if _differs(read_value(sun, key, setting), setting["default"], setting):
+        reset = row.operator(ShaderControlResetRow.bl_idname, text="", icon='LOOP_BACK')
+        reset.key = key
+        reset.local = False
 
 
-def _draw_override_row(layout, root, key):
-    """One row for the character: the follow/override switch, the setting's name, and its value or `global`."""
+def _draw_override_row(layout, root, sun, key):
+    """One row for the character: the follow/override padlock, the name, the value or `global`, and a reset.
+
+    The reset appears only when an override differs from the global it replaced - "I moved this one and want it
+    back" - which keeps the common case (following) to a name and the word `global`.
+    """
     setting = SETTING_BY_KEY[key]
     value = read_value(root, key, setting)
     inheriting = is_inheriting(value, setting)
@@ -844,40 +978,59 @@ def _draw_override_row(layout, root, key):
     row.label(text=setting["input"])
     if inheriting:
         row.label(text="global")
-    else:
-        sub = row.row(align=True)
-        sub.prop(root, '["%s"]' % key, text="", slider=setting["kind"] == "number")
+        return
+    row.prop(root, '["%s"]' % key, text="", slider=setting["kind"] == "number")
+    if _differs(value, read_value(sun, key, setting), setting):
+        reset = row.operator(ShaderControlResetRow.bl_idname, text="", icon='LOOP_BACK')
+        reset.key = key
+        reset.local = True
 
 
-def _draw_sections(layout, host, scene_props, mask_name, all_uma, overrides):
-    """The settings, grouped the way the shader groups them, each group collapsible from its own header.
+def _draw_section_header(layout, scene_props, section, index, all_uma):
+    """The group's header: the fold toggle, and a reset for the whole group. Returns whether it is folded."""
+    mask = int(getattr(scene_props, "shader_global_sections" if all_uma else "shader_uma_sections", 0))
+    collapsed = bool(mask & (1 << index))
+    header = layout.row(align=True)
+    toggle = header.operator(ShaderControlSection.bl_idname, text=section, emboss=False,
+                             icon='TRIA_RIGHT' if collapsed else 'TRIA_DOWN')
+    toggle.index = index
+    toggle.all_uma = all_uma
+    reset = header.operator(ShaderControlResetSection.bl_idname, text="", icon='LOOP_BACK')
+    reset.section = section
+    reset.local = not all_uma
+    return collapsed
 
-    A `UILayout` cannot collapse on its own - a box with a label is as far as one goes - so the open/closed state
-    of each group lives on the scene's own properties (`shader_global_sections` and `shader_uma_sections`, both
-    bitmasks) and the header is the button that toggles it. Default is "open", so nothing hides by surprise and
-    the panel reads like the shader's own interface until somebody tidies it up.
-    """
-    mask = int(getattr(scene_props, mask_name, 0))
+
+def _draw_global_block(layout, sun, scene_props):
+    """Every global value, grouped the way the shader groups them."""
     for index, section in enumerate(SECTION_ORDER):
-        collapsed = bool(mask & (1 << index))
-        header = layout.row(align=True)
-        toggle = header.operator(ShaderControlSection.bl_idname, text=section, emboss=False,
-                                 icon='TRIA_RIGHT' if collapsed else 'TRIA_DOWN')
-        toggle.index = index
-        toggle.all_uma = all_uma
-        if collapsed:
+        if _draw_section_header(layout, scene_props, section, index, True):
             continue
         for key in section_keys(section):
-            if overrides:
-                _draw_override_row(layout, host, key)
-            else:
-                _draw_setting_row(layout, host, key)
+            _draw_global_row(layout, sun, key)
+
+
+def _draw_local_block(layout, root, sun, scene_props):
+    """One character's own values: the master switch, then the same groups."""
+    overrides = override_count(root)
+    row = layout.row(align=True)
+    switch = row.operator(ShaderControlOverrideAll.bl_idname, text="This uma has her own values",
+                          icon='CHECKBOX_HLT' if overrides else 'CHECKBOX_DEHLT', depress=bool(overrides))
+    switch.on = not overrides
+    if overrides:
+        row.label(text="%d of %d set" % (overrides, len(KEYS)))
+    else:
+        row.label(text="follows the global")
+    for index, section in enumerate(SECTION_ORDER):
+        if _draw_section_header(layout, scene_props, section, index, False):
+            continue
+        for key in section_keys(section):
+            _draw_override_row(layout, root, sun, key)
 
 
 def draw_shading_control(layout, context):
-    """The panel section: what mode the scene is in, the global settings, then the selected character's."""
+    """The panel: the mode line and its two buttons, then either the global values or the selected uma's."""
     sun = sun_object(context)
-    root, objects = character_objects(context)
     scene_props = getattr(context.scene, "uma_scene", None)
     mode, drivers = status(context)
 
@@ -897,23 +1050,40 @@ def draw_shading_control(layout, context):
     ensure_properties(sun, KEYS)
     reorder_properties(sun)
 
-    box = layout.box()
-    box.label(text="All umas in this scene", icon='WORLD')
-    _draw_sections(box, sun, scene_props, "shader_global_sections", True, False)
+    # Which character is selected, if any: `root_object` walks up the parent chain, so her root empty, her mesh
+    # and her armature all answer with the same character - the user's "any of the objects in her hierarchy".
+    root, objects = character_objects(context)
+    materials = character_materials(objects) if objects else []
+    character = root if (root is not None and materials) else None
+    show_global = bool(getattr(scene_props, "shader_show_global", False)) or character is None
 
-    if root is None or not objects:
+    if character is not None:
+        row = layout.row(align=True)
+        row.label(text="Showing")
+        this_uma = row.operator(ShaderControlView.bl_idname, text="This uma", depress=not show_global)
+        this_uma.global_view = False
+        global_view = row.operator(ShaderControlView.bl_idname, text="Global", depress=show_global)
+        global_view.global_view = True
+
+    if show_global:
         box = layout.box()
-        box.label(text="Select a character to give it its own values", icon='INFO')
+        box.label(text="All umas in this scene", icon='WORLD')
+        _draw_global_block(box, sun, scene_props)
+
+    if character is None:
+        box = layout.box()
+        if root is not None and objects:
+            box.label(text="%s has no uma shader yet - run Shading on her" % root.name, icon='INFO')
+        else:
+            box.label(text="Select a uma (her root empty, mesh or armature) for her own values", icon='INFO')
         return
 
-    materials = character_materials(objects)
+    if show_global:
+        return
     box = layout.box()
-    box.label(text="%s only" % root.name, icon='OBJECT_DATA')
-    ensure_properties(root, KEYS, inherit=True)
-    reorder_properties(root)
+    box.label(text="Shading for %s" % character.name, icon='OBJECT_DATA')
+    ensure_properties(character, KEYS, inherit=True)
+    reorder_properties(character)
     if len(materials) != 1:
         box.label(text="%d shader material(s) in this character" % len(materials))
-    row = box.row(align=True)
-    row.operator(ShaderControlCopyGlobal.bl_idname, icon='COPYDOWN')
-    row.operator(ShaderControlFollowGlobal.bl_idname, icon='LOOP_BACK')
-    _draw_sections(box, root, scene_props, "shader_uma_sections", False, True)
+    _draw_local_block(box, character, sun, scene_props)

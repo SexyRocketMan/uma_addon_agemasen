@@ -27,10 +27,13 @@ Open the **UMA** panel in the 3D viewport sidebar and look for **Shading - All U
 |---|---|
 | **Hook up the shading control** | Puts the drivers on every copy of every character. `Shading` already does this for you, so this is for a file that was baked, or made before this feature existed |
 | **Bake into materials** | Writes the current values into the materials and removes the drivers - do this before exporting or handing the file on |
+| **The panel follows the selection** | Select anything that belongs to a character — her root empty (`1004_00`), her mesh, her armature — and the panel shows *her* values. Select nothing (or something else) and it shows the global ones. The two are never on screen together |
+| **Showing: This uma / Global** | The switch that appears while a character is selected, for when you want the global values without changing the selection |
+| **This uma has her own values** | The master switch for the selected character. On: every setting becomes hers, seeded with the global's current numbers — so switching it on changes nothing on screen, and you can then move what you need. Off: every setting goes back to following the global |
 | **All umas in this scene** | The global sliders: 12 numbers and 6 colours. Every character without an override follows these |
-| the padlock on a row | `LOCKED` = this character follows the global (the row says `global`). Click to give the character its own value, which starts from what it shows right now, so clicking changes nothing until you move the slider. Click again to go back to following |
-| **Copy the global values to this character** | Fills every override with the global's current numbers, as a known starting point for a character's own look |
-| **Follow the global everywhere** | Puts every row of that character back to following |
+| the padlock on a row | For one setting only: `LOCKED` = this character follows the global (the row says `global`). Click to give her her own value, which starts from what she shows right now. Click again to go back to following |
+| the **↺** on a row | Only shown once a value differs from what it came from. On a character's row it puts that value back to the global's; on a global row it puts the value back to the shader's own default |
+| the **↺** on a group header | The same, for a whole group: a character's group goes back to following the global, a global group goes back to the shader's own defaults |
 
 The line under the two buttons says which mode the file is in:
 

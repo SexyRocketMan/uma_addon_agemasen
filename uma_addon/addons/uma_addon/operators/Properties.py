@@ -341,6 +341,14 @@ class UmaScene(bpy.types.PropertyGroup):
     shader_global_sections: IntProperty(default=0, description="Shading groups folded away in the global list")
     shader_uma_sections: IntProperty(default=0, description="Shading groups folded away in the character's list")
 
+    # The panel follows the selection - a character's own values when one of her objects is selected, the global
+    # ones otherwise - so this only records the case of wanting the global values *while* a character is selected.
+    shader_show_global: BoolProperty(
+        default=False,
+        description="Show the global shading values even when a character is selected. The panel follows the "
+                    "selection by default: an object of a character's hierarchy selected shows her own values, "
+                    "anything else shows the global ones")
+
     ear_target: StringProperty(name="")
     is_uma_acton: BoolProperty(default=True)
     action_category: EnumProperty(name="", items=get_action_category, update=update_action_category)
