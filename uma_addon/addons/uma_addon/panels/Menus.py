@@ -1,7 +1,6 @@
 from ..config import __addon_name__
 from ..operators.AddonOperators2 import SelectUnassignedMeshes, MarkCollectionCenter, PrintSelectedVertices, PrintSelectedEdges, PrintSelectedFaces, PrintSelectedBones, PrintAllBones, MeshToPython, CombineShapekeys, SyncShapekeys, RemoveBoneConstraints
 from ..operators.Controller import MMRRig
-from ..operators.TanukiNodes import Tanuki_Texture, Tanuki_Switch
 from ....common.i18n.i18n import i18n
 from ....common.types.framework import reg_order
 from ..image.ImageManager import get_image_id
@@ -38,12 +37,3 @@ def Outliner_menu(self, context):
 
 def MMR_XFFGL_menu(self, context):
     self.layout.operator(MMRRig.bl_idname, icon_value=get_image_id("ctrl"))
-
-# 节点菜单
-def TanukiTexture_menu(self, context):
-    self.layout.separator()
-    self.layout.operator("node.add_node", text="Tanuki Texture").type = Tanuki_Texture.bl_idname
-
-def TanukiSwitch_menu(self, context):
-    self.layout.separator()
-    self.layout.operator("node.add_node", text="Tanuki Switch").type = Tanuki_Switch.bl_idname

@@ -1,12 +1,9 @@
 import bpy
 import os
-import tempfile
-import shutil
 from bpy.props import StringProperty, IntProperty, BoolProperty, CollectionProperty
 from bpy.types import AddonPreferences
 from ..config import __addon_name__
 from ..operators.Properties import EarTargets, AllActions
-from ..operators.Dependencies import is_pillow_available
 from ..utils.Config_handling import get_config_parameter, set_config_parameter, get_panel_name
 from ..panels.AddonPanels import (ModelProcessPanel, ControllerPanel, ChangeHeadPanel, PhysicsandActionsPanel,
                                   ShadingLookPanel)
@@ -49,20 +46,6 @@ class AddonPreferences(AddonPreferences):
 
         layout.prop(self, "panel_name")
 
-        box = layout.box()
-        row = box.row()
-        if is_pillow_available():
-            try:
-                import PIL
-                row.label(text=f"Pillow {PIL.__version__}")
-            except:
-                row.label(text="Pillow is installed")
-            row.operator("uma.uninstall_pillow", icon='REMOVE')
-        else:
-            row.label(text="Pillow is not installed")
-            row.operator("uma.install_pillow", icon='IMPORT')
-
-        box.label(text="The duration of the blockage caused by the installation depends on the network quality. Uninstallation takes effect after a restart.")
         row = layout.row()
         row.operator(RefreshData.bl_idname, icon="FILE_REFRESH")
         row.operator(ClearData.bl_idname, icon="TRASH")
@@ -113,9 +96,6 @@ class ClearData(bpy.types.Operator):
         scene_props = context.scene.uma_scene
         scene_props.filtered_actions.clear()
         scene_props.action_index = 0
-
-        cache = os.path.join(tempfile.gettempdir(), "tanuki_cache")
-        shutil.rmtree(cache, ignore_errors=True)
 
         self.report({'INFO'}, "Clear addon data successfully")
         return {'FINISHED'}

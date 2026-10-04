@@ -9,8 +9,7 @@ from ...common.class_loader.auto_load import add_properties, remove_properties
 from ...common.i18n.dictionary import common_dictionary
 from ...common.i18n.i18n import load_dictionary
 
-from .panels.Menus import View3dObject_menu, View3dEdit_menu, View3dPose_menu, Outliner_menu, MMR_XFFGL_menu, TanukiTexture_menu, TanukiSwitch_menu
-from .operators.TanukiNodes import scene_frame_change_handler
+from .panels.Menus import View3dObject_menu, View3dEdit_menu, View3dPose_menu, Outliner_menu, MMR_XFFGL_menu
 from .operators.Physics import DampedTrackProperties
 from .operators.Properties import UmaScene, UmaObject, UmaArmature
 from .image.ImageManager import load_image, clear_image
@@ -83,14 +82,6 @@ def register():
     else:
         print("未找到 MMR 插件")
 
-    if hasattr(bpy.types, "NODE_MT_category_shader_texture"):
-        bpy.types.NODE_MT_category_shader_texture.append(TanukiTexture_menu)
-    if hasattr(bpy.types, "NODE_MT_category_shader_converter"):
-        bpy.types.NODE_MT_category_shader_converter.append(TanukiSwitch_menu)
-    # 注册帧变化处理
-    if scene_frame_change_handler not in bpy.app.handlers.frame_change_pre:
-        bpy.app.handlers.frame_change_pre.append(scene_frame_change_handler)
-    
     bpy.app.timers.register(fill_data_on_start, first_interval=0.1)
     load_image()
     print("{} is installed.".format(__addon_name__))
@@ -110,13 +101,6 @@ def unregister():
     if mmr_panel:
         mmr_panel.remove(MMR_XFFGL_menu)
 
-    if hasattr(bpy.types, "NODE_MT_category_shader_texture"):
-        bpy.types.NODE_MT_category_shader_texture.remove(TanukiTexture_menu)
-    if hasattr(bpy.types, "NODE_MT_category_shader_converter"):
-        bpy.types.NODE_MT_category_shader_converter.remove(TanukiSwitch_menu)
-    # 注销帧变化处理
-    if scene_frame_change_handler in bpy.app.handlers.frame_change_pre:
-        bpy.app.handlers.frame_change_pre.remove(scene_frame_change_handler)
     clear_image()
 
     # Internationalization
