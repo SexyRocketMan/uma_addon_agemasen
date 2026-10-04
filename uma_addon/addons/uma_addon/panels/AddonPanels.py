@@ -238,10 +238,16 @@ class ControllerPanel(BasePanel, bpy.types.Panel):
 
 @reg_order(3)
 class ShadingLookPanel(BasePanel, bpy.types.Panel):
-    """One place to set the look of every uma in the scene, with per-character overrides."""
+    """One place to set the look of every uma in the scene, with per-character overrides.
+
+    Open by default, unlike the panels above: the values live on objects as custom properties, and Blender's own
+    Custom Properties list can neither be grouped nor ordered to match the shader (measured - the only handle,
+    `IDPropertyUIManager`, carries `as_dict/clear/update/update_from` and nothing else, and the list is sorted,
+    which is why the user's properties never appeared in the shader's order there). This panel is where both the
+    order and the grouping come from, so it should be the first thing a user sees rather than something to find.
+    """
     bl_label = "Shading - All Umas"
     bl_idname = "SCENE_PT_umaaddonpanel5"
-    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context: bpy.types.Context):
         if draw_shading_control is None:
