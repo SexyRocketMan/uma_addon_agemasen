@@ -46,6 +46,9 @@ TAG = "face-normals-1"
 
 #: Names the copy and the modifier get, and the custom property that marks the copy as ours.
 COPY_SUFFIX = "_normals_static"
+
+#: The collection the static copy lives in - hidden by default, one click from visible in the Outliner.
+COPY_COLLECTION_NAME = "UMA Face Normals"
 MODIFIER_NAME = "UMA Face Normals"
 COPY_MARKER = "uma_face_normals_copy"
 FACE_GROUP_NAME = "UMA_Face"
@@ -124,6 +127,30 @@ def find_copy(face_obj):
     return bpy.data.objects.get(face_obj.name + COPY_SUFFIX)
 
 
+def copy_collection(face_obj):
+    """The collection the static copy lives in: hidden by default, one click from being visible.
+
+    Its own collection rather than the model's, because that is the toggle a user will look for, and because it
+    keeps the copy out of the way of the character's own collection while still being findable in the Outliner.
+    """
+    collection = bpy.data.collections.get(COPY_COLLECTION_NAME)
+    if collection is None:
+        collection = bpy.data.collections.new(COPY_COLLECTION_NAME)
+        # linked under the scene, and under the character's own collection when it has one, so it stays with the
+        # model when the scene is organised
+        parent = face_obj.users_collection[0] if face_obj.users_collection else None
+        if parent is not None:
+            try:
+                parent.children.link(collection)
+            except RuntimeError:
+                bpy.context.scene.collection.children.link(collection)
+        else:
+            bpy.context.scene.collection.children.link(collection)
+    collection.hide_viewport = True
+    collection.hide_render = True
+    return collection
+
+
 def make_copy(context, face_obj, armature, head, trace=None):
     """The static copy: same mesh, no shape keys, not skinned, turning with the head, hidden."""
     copy = face_obj.copy()
@@ -155,13 +182,30 @@ def make_copy(context, face_obj, armature, head, trace=None):
         constraint.subtarget = head.name
     constraint.mix_mode = 'REPLACE'
     constraint.influence = 1.0
+    # **LOCAL on both sides**, and this is the whole of a reported bug. With the defaults (world space) the
+    # constraint *replaces* the copy's rotation with the head bone's world rotation, which at rest is the bone's own
+    # orientation - measured 94.157 degrees away from the face's - so every transferred normal came back rotated:
+    # mean normal change at rest (no morphs) **72.74 degrees**, which is the user's *"it shifts the boundary between
+    # the diffuse/shaded regions, and adds a bright region on the side of the face"*. Measured over five ways of
+    # following the head (`face_normals_rest_check.py`), LOCAL/LOCAL is the only one that is identity at rest
+    # (**0.00 degrees**): the copy inherits the head's *motion* rather than its *orientation*, which is what
+    # "copies the rotation of the head bone so it reacts to directions properly" means. `use_offset`, ADD and bone
+    # parenting were all measured too and none of them help (72.74, 72.74 and 72.74 degrees).
+    constraint.owner_space = 'LOCAL'
+    constraint.target_space = 'LOCAL'
 
-    # Hidden the ordinary way, with the flags the Outliner's eye and the render toggle actually drive.
-    # `hide_set(True)` is deliberately *not* used: it is a per-view-layer hide that overrides those flags, so the
-    # reported "I couldn't get it to appear even after enabling viewport visibility" is exactly what it causes.
-    copy.hide_viewport = True
-    copy.hide_render = True
-    copy.hide_select = False
+    # Hidden in the **collection**, not on the object, and this is the second reported bug: neither the object's
+    # eye (`hide_set`, a per-view-layer hide that overrides the eye) nor `hide_viewport` (the Outliner's *monitor*
+    # icon) is the flag a user reaches for first, and setting either one leaves "I couldn't get it to appear even
+    # after enabling viewport visibility" true. The copy goes into its own collection whose viewport and render
+    # flags are off, so it is out of the way by default and **one click in the Outliner** - on a collection named
+    # for what it is - brings it back.
+    collection = copy_collection(face_obj)
+    for other in list(copy.users_collection):
+        if other is not collection:
+            other.objects.unlink(copy)
+    if copy.name not in collection.objects:
+        collection.objects.link(copy)
     if copy.parent is None and face_obj.parent is not None:
         # keep it in the same place as the object it copies, without inheriting what makes that object move
         copy.matrix_world = face_obj.matrix_world
