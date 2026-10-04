@@ -253,6 +253,44 @@ def all_characters(context):
     return found
 
 
+def character_materials_at(root, context):
+    """The shader materials of the character whose root empty is `root`."""
+    if root is None:
+        return []
+    meshes = [obj for obj in context.scene.objects
+              if obj.type == 'MESH' and root_object(obj) is root and not is_library_object(obj)]
+    return character_materials(meshes)
+
+
+def panel_character(context):
+    """Which character the *panel* is showing: one of hers has to be **selected**, not merely active.
+
+    The user's report: *"the selection goes back to global only if a non-uma object is selected - not when nothing
+    is selected, in this case it's stuck at the uma controls."* That is exactly what keying the panel off
+    `context.active_object` does: Blender keeps the active object when everything is deselected (Deselect All,
+    Alt+A, the Object menu), so "nothing selected" still had an active mesh and the panel kept showing her values.
+
+    So the panel reads `context.selected_objects`, with the active object only as a *tiebreak* among the selected
+    ones - several characters selected is a real thing in a two-character file, and the one Blender marks active is
+    the one the operators act on, so the panel should agree with them. Nothing selected, or nothing of a
+    character's selected, means `None` and the panel shows the global values.
+    """
+    active = getattr(context.view_layer.objects, "active", None) or context.active_object
+    selected = [obj for obj in getattr(context, "selected_objects", []) if obj is not None]
+    ordered = ([active] if active is not None and active in selected else []) + \
+        [obj for obj in selected if obj is not active]
+    seen = []
+    for obj in ordered:
+        root = root_object(obj)
+        if root is None or any(root is entry for entry in seen):
+            continue
+        materials = character_materials_at(root, context)
+        if materials:
+            return root, materials
+        seen.append(root)
+    return None, []
+
+
 def resolve_values(context, root=None):
     """What every setting currently comes out as: the global value, or `root`'s override when it has one."""
     sun = sun_object(context)
@@ -1033,26 +1071,20 @@ def draw_shading_control(layout, context):
     ensure_properties(sun, KEYS)
     reorder_properties(sun)
 
-    # Which character is selected, if any: `root_object` walks up the parent chain, so her root empty, her mesh
-    # and her armature all answer with the same character - the user's "any of the objects in her hierarchy".
-    root, objects = character_objects(context)
-    materials = character_materials(objects) if objects else []
-    character = root if (root is not None and materials) else None
-    # No switch and no stored view state: a character selected *is* her panel, anything else is the global one. To
-    # reach the global values while a character is selected, select something that is not hers.
-    show_global = character is None
-
-    if show_global:
+    # Which character the panel is showing: `panel_character` reads the *selection*, so deselecting everything
+    # goes back to the global values even though Blender keeps an active object (the user's report).
+    character, materials = panel_character(context)
+    if character is None:
         box = layout.box()
         box.label(text="All umas in this scene", icon='WORLD')
         _draw_global_block(box, sun, scene_props)
-
-    if character is None:
-        box = layout.box()
-        if root is not None and objects:
-            box.label(text="%s has no uma shader yet - run Shading on her" % root.name, icon='INFO')
+        hint = layout.box()
+        # a better sentence than "select a uma" when the active object *is* a uma with no shader yet
+        active_root, active_objects = character_objects(context)
+        if active_root is not None and active_objects and not character_materials(active_objects):
+            hint.label(text="%s has no uma shader yet - run Shading on her" % active_root.name, icon='INFO')
         else:
-            box.label(text="Select a uma (her root empty, mesh or armature) for her own values", icon='INFO')
+            hint.label(text="Select a uma (her root empty, mesh or armature) for her own values", icon='INFO')
         return
 
     box = layout.box()
