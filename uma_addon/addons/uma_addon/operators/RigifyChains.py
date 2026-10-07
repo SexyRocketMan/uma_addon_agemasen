@@ -83,9 +83,17 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-52"
+BUILD_TAG = "chains-53"
 BUILD = BUILD_TAG + (
-    ": 2.13.0 - an Uninstall button in the add-on's own preferences panel. Blender draws one in "
+    ": 2.13.1 - the Physics & Action panel stops writing scene properties while it draws (Blender "
+    "5.x refuses ID writes in a draw: \"Writing to ID classes in this context is not allowed\", which "
+    "is why the action list never arrived, and the fill is a one-shot timer now), the heart button is "
+    "disabled through its row instead of by assigning `.enabled` to the object `layout.operator()` "
+    "returns (\"'UMA_OT_toggle_favorite' object has no attribute 'enabled'\", which ended the whole "
+    "draw), and the face-normal step refreshes its static copy when the face's topology has changed "
+    "under it - a separated material slot used to leave a copy on the old topology for ever, with the "
+    "transfer erroring on every evaluation and re-running the step unable to repair it. Before that: "
+    "2.13.0 - an Uninstall button in the add-on's own preferences panel. Blender draws one in "
     "that list only for a *legacy* add-on (bl_pkg/bl_extension_ui.py:242-247), so an extension install "
     "had none anywhere a user would look; the button runs extensions.package_uninstall for an "
     "extension and preferences.addon_remove for a legacy copy, names the folder in a confirmation "

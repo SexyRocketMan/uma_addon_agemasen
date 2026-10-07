@@ -258,6 +258,44 @@ def make_modifier(face_obj, copy, group=None, context=None):
     return modifier
 
 
+def copy_topology_mismatch(copy, face_obj):
+    """Why the existing copy can no longer feed a `TOPOLOGY` transfer, or `""` when it still can.
+
+    `TOPOLOGY` mapping needs the same topology on both sides, and a mesh is edited all the time: separating a
+    material slot, joining another object into it, deleting faces, running a decimate. The step used to reuse the
+    copy's mesh data as it was, so a copy made *before* such an edit stayed on the old topology for ever and the
+    transfer kept writing wrong normals - and pressing **Apply face normals** again did not repair it, because the
+    copy was simply "reused". Measured (`shader_black_check.py`): separating one material slot took the destination
+    from 76,584 corners to 75,420 while the copy stayed at 76,584, which is the reported
+    *"Source and destination meshes do not have the same number of face corners"* and, for a toon shader, a face
+    whose shading no longer means anything.
+    """
+    if copy.data is None:
+        return "the copy has no mesh"
+    if len(copy.data.vertices) != len(face_obj.data.vertices):
+        return "%d copy vertices against %d on the face" % (len(copy.data.vertices),
+                                                            len(face_obj.data.vertices))
+    if len(copy.data.loops) != len(face_obj.data.loops):
+        return "%d copy corners against %d on the face" % (len(copy.data.loops), len(face_obj.data.loops))
+    if copy.data.shape_keys is not None:
+        return "the copy has shape keys again"
+    return ""
+
+
+def refresh_copy_data(copy, face_obj):
+    """Give the copy the face's *current* mesh and keep everything else about it: constraint, collection, name.
+
+    The same three things `make_copy` does to a new copy - fresh data, no shape keys, no modifiers - applied to an
+    existing one, so a re-run after a topology edit repairs the transfer instead of leaving it broken.
+    """
+    copy.data = face_obj.data.copy()
+    copy.data.name = copy.name
+    copy.shape_key_clear()
+    for modifier in list(copy.modifiers):
+        copy.modifiers.remove(modifier)
+    return copy
+
+
 def faces_in(context, objects=None):
     """The objects this step should act on, with the reason each was chosen."""
     if objects is None:
@@ -308,9 +346,17 @@ def apply_face_normals(context, objects=None, trace=None):
             copy = make_copy(context, face_obj, armature, head, trace)
             entry["copy"] = "created"
         else:
-            # refresh it in place: a re-run must not stack copies
-            copy.data = face_obj.data.copy() if copy.data is None else copy.data
-            entry["copy"] = "reused"
+            # reuse it, but not blindly: if the face's topology has changed since the copy was made (a separated
+            # slot, a join, deleted faces), the copy's mesh is refreshed from the face so the transfer maps again
+            mismatch = copy_topology_mismatch(copy, face_obj)
+            if mismatch:
+                refresh_copy_data(copy, face_obj)
+                entry["copy"] = "reused, mesh refreshed (%s)" % mismatch
+                report["notes"].append("%s: the copy's mesh was refreshed (%s)" % (face_obj.name, mismatch))
+                if trace is not None:
+                    trace.info("refreshed the static copy of %r: %s" % (face_obj.name, mismatch))
+            else:
+                entry["copy"] = "reused"
         modifier = make_modifier(face_obj, copy, group, context)
         entry["modifier"] = modifier.name
         entry["settings"] = {"object": copy.name, "use_loop_data": modifier.use_loop_data,

@@ -158,9 +158,73 @@ def action_list_hint(scene_props):
     """
     if scene_props.filtered_actions:
         return None
+    if action_list_failed():
+        return "The action library could not be read - see the console"
+    if action_list_pending():
+        return "Reading the action library..."
     if scene_props.action_category == "ear" and scene_props.level1 == "Favorite":
         return "No favourites yet - pick a level above, then the heart marks one"
     return "No actions match %s / %s" % (scene_props.action_category, scene_props.level1)
+
+
+# --- the deferred action-list fill ---------------------------------------------------------------------------
+#
+# Building the list means clearing and re-adding `scene_props.filtered_actions` and setting `action_index` - ID
+# writes. Blender 5.x refuses those **while a panel is being drawn**:
+#
+#     AttributeError: Writing to ID classes in this context is not allowed: Scene, Scene data-block,
+#     error setting UmaScene.<UNKNOWN>
+#
+# It was done inline in `draw` as the fallback for a scene nobody had touched, which is exactly the reported
+# "the action list never arrives" plus a traceback out of `SCENE_PT_umaaddonpanel3.draw`. The fill is therefore
+# requested from `draw` and performed by a one-shot timer, which runs outside the draw.
+_FILL_STATE = {"pending": False, "failures": 0}
+_FILL_MAX_FAILURES = 3
+
+
+def _fill_action_list():
+    """The timer: build the list now that no panel is being drawn, then let the panels redraw."""
+    _FILL_STATE["pending"] = False
+    try:
+        scene_props = bpy.context.scene.uma_scene
+        ensure_action_list(scene_props, bpy.context)
+    except Exception as error:  # noqa: BLE001 - a timer must not raise, and the panel must not die with it
+        _FILL_STATE["failures"] += 1
+        print("[uma_addon] could not build the action list (%s: %s) - attempt %d of %d"
+              % (type(error).__name__, error, _FILL_STATE["failures"], _FILL_MAX_FAILURES))
+        return None
+    _tag_panels_redraw()
+    return None
+
+
+def request_action_list():
+    """Queue the fill, at most once, and stop asking after a few failures. Writes nothing itself."""
+    if _FILL_STATE["pending"] or _FILL_STATE["failures"] >= _FILL_MAX_FAILURES:
+        return False
+    _FILL_STATE["pending"] = True
+    bpy.app.timers.register(_fill_action_list, first_interval=0.0)
+    return True
+
+
+def action_list_pending():
+    """Whether a fill is queued - readable by a probe without a UI."""
+    return bool(_FILL_STATE["pending"])
+
+
+def action_list_failed():
+    """Whether the fill has been given up on, so `action_list_hint` can say so instead of staying silent."""
+    return _FILL_STATE["failures"] >= _FILL_MAX_FAILURES
+
+
+def _tag_panels_redraw():
+    """Redraw the 3D views, guarded: a timer can run with no window at all (a background session)."""
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == "VIEW_3D":
+                    area.tag_redraw()
+    except Exception:  # noqa: BLE001 - a missing window is not a reason to fail the fill
+        pass
 
 
 @reg_order(1)
@@ -202,28 +266,22 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
             # 1156 rows to one with a single row and the old index is past the end. Reading it unguarded raised
             # `IndexError: bpy_prop_collection[index]: index 40 out of range, size 1` out of `draw`, and Blender
             # stops a panel where it stopped - which is the reported "the list of actions is gone now, just the
-            # dropdown selectors are rendered". Clamped here, and the list is only read when it has rows.
+            # dropdown selectors are rendered". Clamped here for *reading*: the clamp is no longer written back,
+            # because a write here is an ID write during draw, which 5.x refuses (see `_fill_action_list`).
             def selected_action():
-                if not len(scene_props.filtered_actions):
+                count = len(scene_props.filtered_actions)
+                if not count:
                     return None
-                index = min(max(scene_props.action_index, 0), len(scene_props.filtered_actions) - 1)
-                if index != scene_props.action_index:
-                    scene_props.action_index = index
+                index = min(max(scene_props.action_index, 0), count - 1)
                 return scene_props.filtered_actions[index]
 
             current = selected_action()
             fav_icon = 'FUND' if (current is not None and current.is_favorite) else 'HEART'
-            # the list is built by the filter updates, so a scene nobody has touched has none: fill it here, once.
-            # A panel must never raise (Blender truncates it at the exception), so a failing fill is reported and
-            # the panel carries on with whatever the list holds.
+            # The list is built by the filter updates, so a scene nobody has touched has none. The fill used to
+            # happen here; it now goes through a timer, because building the list writes scene ID properties and
+            # Blender 5.x refuses that during draw ("Writing to ID classes in this context is not allowed").
             if not scene_props.action_list_filled:
-                try:
-                    ensure_action_list(scene_props, context)
-                except Exception as error:  # noqa: BLE001
-                    print("[uma_addon] could not build the action list (%s: %s); the panel keeps what it has"
-                          % (type(error).__name__, error))
-                current = selected_action()
-                fav_icon = 'FUND' if (current is not None and current.is_favorite) else 'HEART'
+                request_action_list()
             row = layout.row()
             col = row.column(align=True)
             box = col.box()
@@ -246,8 +304,13 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
             hint = action_list_hint(scene_props)
             if hint:
                 col.label(text=hint, icon='INFO')
-            heart = box_row.operator(ToggleFavorite.bl_idname, text="", icon=fav_icon)
-            heart.enabled = bool(scene_props.filtered_actions)
+            # The heart sits in its own row so the row can carry the disabled state: `layout.operator()` returns
+            # Blender's operator-properties object, and assigning to it raised
+            # `AttributeError: 'UMA_OT_toggle_favorite' object has no attribute 'enabled'` - which is the other half
+            # of the reported traceback, and it ended the whole panel's draw at that line.
+            heart_row = box_row.row()
+            heart_row.enabled = bool(scene_props.filtered_actions)
+            heart_row.operator(ToggleFavorite.bl_idname, text="", icon=fav_icon)
         else:
             row.operator(AnyActionMode.bl_idname, icon="ANIM", emboss=False)
             row = layout.row(align=True)
