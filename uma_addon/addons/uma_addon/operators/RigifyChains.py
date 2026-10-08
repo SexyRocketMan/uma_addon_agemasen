@@ -66,6 +66,9 @@ MODEL_COLLECTION_NAME = "MMD"
 # where the model's own bones are made to follow the new chains
 FOLLOW_CONSTRAINT_NAME = "UMA_chain_follow"
 ROTATE_CONSTRAINT_NAME = "UMA_chain_rotate"
+# the `chain_link: local` wiring (handoff 9bk): one constraint per chain bone, named the same whatever its type,
+# so a scene converted between the two wirings has exactly one thing to remove
+LINK_CONSTRAINT_NAME = "UMA_chain_link"
 BBONE_SEGMENTS = 8
 # How close a metarig bone has to be to the model bone's own parent to be used as the chain root's
 # attachment. MMR's metarig has no bone for some model parents (Sp_He_Ear0_L_00, which the animator's own
@@ -302,6 +305,31 @@ DEFAULT_RULES = {
         # push into 2.26x and froze the tip in the pair test - so the skirt rule opts in above and every
         # other family keeps the verified rigid behaviour.
         "chain_deform": "rigid",
+        # How the model's own chain bones are made to follow the rig (handoff 9bk). `local` keeps the model's own
+        # MMD hierarchy - nothing is released - and gives each chain bone a copy of its **control's own local
+        # rotation**, which is the character-move-safe link: measured, moving the character by its root empty
+        # tears the mesh by 0.000001 m against 0.588386 m with the world-space wiring, and the chain follows the
+        # body exactly as the raw MMD rig does (tip/head 1.509, the raw rig's own ratio) where the world-space
+        # wiring over-moves it by 1.53x. `limbs.spline_tentacle` chains keep a positional link because their
+        # motion is positional (the curve re-shapes the chain): they get a POSE-space COPY_TRANSFORMS, which
+        # carries that reshaping without letting the object's own transform in - measured, the alternative
+        # (rotation only) drops the spline's `_master` control from 0.048272 m to 0.000000 m.
+        # `world` is the previous wiring: release every chain bone from its MMD parent and follow the ORG copy in
+        # world space. Kept as the escape hatch, and what the fleet was baselined on.
+        #
+        # **Why `local` is implemented but not yet the default** (handoff 9bl): it is right for every
+        # rotation-driven rig type - measured, the stretch under a root-empty move falls from 0.588386 m and 182
+        # bones to 0.000001 m and 0 bones, the chain follows the body at the raw rig's own ratio (tip/head 1.509
+        # against 2.303 for the world wiring), and every `basic.super_copy` and `spines.basic_tail` control moves
+        # the mesh by exactly the same amount as before. A `limbs.spline_tentacle` chain is the exception and it is
+        # structural: its motion is positional (the curve re-shapes the ORG chain), and rigify's spline rig does
+        # not reproduce the model's chain exactly - the ORG's *pose* sits 0.01534 m from the model's joint on the
+        # reference model (up to 0.13624 m on character 1001), which is the rig type's own error, not placement.
+        # Carrying that motion needs a link that *copies* the ORG (which then also copies that gap: 8 bones off
+        # their rest by 15 mm), while every delta-form link that avoids the gap gains the two armatures' own
+        # motion in this Blender and tears the mesh by 2.32 m. Six link variants were measured; the numbers are in
+        # the handoff. Until that is decided, the default stays what it was.
+        "chain_link": "world",
         # Families no mode may rig, whatever the setup asks for. His pipeline deletes `Sp_He_Ear0` and no vertex
         # in the model is weighted to it (handoff 9m), so `Setup = Simple` - which chains every soft part - must
         # not bring it back: without this, Simple produced two chains that the weight filter then dropped again
@@ -3011,20 +3039,33 @@ class RigifyChains(bpy.types.Operator):
         return released, not_connected
 
     def _wire_model_to_chains(self, model, rig, chains, trace, release_parents=True, resample="keep",
-                              chain_deform="rigid"):
+                              chain_deform="rigid", chain_link="world"):
         """Let the model's own chain bones follow the rig's copies of the same name.
 
-        `CHILD_OF` with the inverse matrix taken from the target bone's *rest* matrix, rather than MMR's
-        plain world-space copy-transforms: that moves the model bone by the rig bone's motion and leaves its
-        rest alone. A world-space copy instead teleports the model bone onto the rig bone, so any difference
-        between the two rest poses becomes a visible pull on the mesh - which is what a mismatched metarig
-        produced the first time round.
+        Two wirings, chosen by `chain_link` (`options.chain_link`, handoff 9bk):
 
-        In `bbone` mode (his architecture) the chain keeps its own hierarchy, every bone gets the same
-        8 B-Bone segments rigify gives its deform chain, and only the root is a `CHILD_OF`: the children are
-        set to the rig bone's world rotation with `COPY_ROTATION` in REPLACE mode, so the parent they keep
-        supplies their position and the constraint supplies their rotation - once each, not twice.
+        **`local`** - the model's own MMD hierarchy is **kept** (nothing is released) and each chain bone copies
+        its control's **local** rotation, so the only thing that reaches it from the rig is the delta the animator
+        adds on top of the body's motion, which arrives once through the hierarchy. Measured on the reference
+        model, moving the character by its root empty (0.5 m and 20 degrees): mesh off by **0.000001 m, 0 bones
+        shifted**, against **0.588386 m and 182 bones** with the world-space wiring - and turning the head moves a
+        hair chain by the raw MMD rig's own ratio (tip/head 1.509) where the world-space wiring over-moves it by
+        1.53x (2.303). A `limbs.spline_tentacle` chain gets a **POSE-space `COPY_TRANSFORMS`** instead, because its
+        motion is positional: the curve re-shapes the ORG chain, and pose space carries that reshaping while
+        excluding both objects' own transforms. Rotation only would drop its `_master` control from 0.048272 m to
+        0.000000 m - measured - so the two rig types genuinely need two links.
+
+        **`world`** - the previous wiring, kept as the escape hatch: `CHILD_OF` with the inverse matrix taken from
+        the target bone's *rest* matrix, rather than MMR's plain world-space copy-transforms: that moves the model
+        bone by the rig bone's motion and leaves its rest alone. A world-space copy instead teleports the model
+        bone onto the rig bone, so any difference between the two rest poses becomes a visible pull on the mesh -
+        which is what a mismatched metarig produced the first time round. In `bbone` mode (his architecture) the
+        chain keeps its own hierarchy, every bone gets the same 8 B-Bone segments rigify gives its deform chain,
+        and only the root is a `CHILD_OF`: the children are set to the rig bone's world rotation with
+        `COPY_ROTATION` in REPLACE mode, so the parent they keep supplies their position and the constraint
+        supplies their rotation - once each, not twice.
         """
+        local_link = str(chain_link).lower() == "local"
         groups = [[name for name in chain if ("ORG-" + name) in rig.pose.bones and name in model.pose.bones]
                   for _rule, chain in chains]
         groups = [chain for chain in groups if chain]
@@ -3047,7 +3088,13 @@ class RigifyChains(bpy.types.Operator):
         rigid_groups = [[name for name in chain if name not in linked_names] for _rule, chain in chains]
         rigid_groups = [chain for chain in rigid_groups if chain]
         unconnected_joints = []
-        if release_parents:
+        if local_link:
+            # nothing is released: the model keeps the hierarchy MMD gave it, which is what makes the chains
+            # follow the body once (and what lets a damping-track chain or the raw rig be posed by hand)
+            trace.info("chain link: local - the model's own hierarchy is kept (no parent is released) and each "
+                       "chain bone copies its control's own local rotation; spline chains get a pose-space "
+                       "transform copy")
+        elif release_parents:
             if linked_groups:
                 _released, unconnected_joints = self._release_wired_bones(
                     model, linked_groups, trace, keep_links=True)
@@ -3098,6 +3145,13 @@ class RigifyChains(bpy.types.Operator):
         worst_rest_delta = 0.0
         rest_deltas = {}
         rotation_driven = 0
+        local_rotation, local_pose, local_from_control, local_from_org = 0, 0, 0, 0
+        # A spline chain's motion is positional - the curve re-shapes its ORG chain - so it takes the pose-space
+        # transform link rather than the rotation one (handoff 9bk)
+        spline_names = set()
+        for rule, names in chains:
+            if str(rule.get("type")) == "limbs.spline_tentacle":
+                spline_names.update(names)
 
         # What "no motion" means for the follow constraints: each ORG copy's world matrix **with the rig
         # unposed**. Taking it from the bone's rest matrix is not the same thing, and the difference is
@@ -3112,6 +3166,13 @@ class RigifyChains(bpy.types.Operator):
         # constraint exactly identity at rest on any model, whatever the bake moved
         # (docs/RIGIFY_CHAINS_HANDOFF.md 9r).
         references = {}
+        # ...and the same reference in **pose space** (the ORG bone's own matrix, i.e. without either object's
+        # world transform), which is what the `local` link's spline half needs: see the `CHILD_OF` below. `POSE`
+        # on both sides keeps the object transforms out, and the inverse matrix keeps the baked spline rest offset
+        # out as well - without it the model's tail bones jumped 0.01535 m at rest (measured on the reference
+        # model: 8 bones off their rest position, which the run's own `the model is undisturbed at rest` check
+        # then failed on).
+        pose_references = {}
         if wireable:
             saved_basis = {pose_bone.name: pose_bone.matrix_basis.copy()
                            for pose_bone in rig.pose.bones}
@@ -3124,6 +3185,7 @@ class RigifyChains(bpy.types.Operator):
                 rig_pose_bone = rig.pose.bones.get("ORG-" + name)
                 if rig_pose_bone is not None:
                     reference = (rig.matrix_world @ rig_pose_bone.matrix).copy()
+                    pose_references[name] = rig_pose_bone.matrix.copy()
                     if rig_bone is not None:
                         absorbed[name] = (reference.translation
                                           - (rig.matrix_world @ rig_bone.head_local)).length
@@ -3160,7 +3222,47 @@ class RigifyChains(bpy.types.Operator):
                     rest_deltas[name] = delta
             # a chain root always follows its rig bone outright; a linked child is rotated by its own rig
             # bone and positioned by the chain it belongs to
-            if name in linked_names and name not in roots and name not in unconnected_joints:
+            if local_link:
+                # one constraint per chain bone, whatever its rig type: the rotation link for everything whose
+                # motion is a rotation, the pose-space transform link for a spline chain. Any of the three names
+                # this operator has ever used is cleared first, so re-running over either wiring leaves exactly
+                # one link per bone.
+                for constraint_name in (FOLLOW_CONSTRAINT_NAME, ROTATE_CONSTRAINT_NAME, LINK_CONSTRAINT_NAME):
+                    existing = pose_bone.constraints.get(constraint_name)
+                    if existing is not None:
+                        pose_bone.constraints.remove(existing)
+                if name in spline_names:
+                    # A spline chain's motion is positional, so it needs the transform, not just the rotation -
+                    # in POSE space, so neither object's own transform enters (which is what makes the character
+                    # movable by its root empty without tearing). Measured on the design model: the spline's
+                    # `_master` control keeps working at 0.048272 m, and the stretch is 0.000240 m against
+                    # 0.588386 m for the world-space wiring.
+                    constraint = pose_bone.constraints.new('COPY_TRANSFORMS')
+                    constraint.name = LINK_CONSTRAINT_NAME
+                    constraint.target = rig
+                    constraint.subtarget = "ORG-" + name
+                    constraint.owner_space = 'POSE'
+                    constraint.target_space = 'POSE'
+                    constraint.mix_mode = 'REPLACE'
+                    local_pose += 1
+                else:
+                    subtarget = name if name in rig.pose.bones else "ORG-" + name
+                    constraint = pose_bone.constraints.new('COPY_ROTATION')
+                    constraint.name = LINK_CONSTRAINT_NAME
+                    constraint.target = rig
+                    constraint.subtarget = subtarget
+                    # LOCAL on both sides: relative to each bone's own rest orientation, so neither object's
+                    # transform enters the constraint at all - which is the whole reason the character can be
+                    # moved by its root empty without the mesh tearing
+                    constraint.owner_space = 'LOCAL'
+                    constraint.target_space = 'LOCAL'
+                    constraint.mix_mode = 'REPLACE'
+                    local_rotation += 1
+                    if subtarget == name:
+                        local_from_control += 1
+                    else:
+                        local_from_org += 1
+            elif name in linked_names and name not in roots and name not in unconnected_joints:
                 follow = pose_bone.constraints.get(FOLLOW_CONSTRAINT_NAME)
                 if follow is not None:
                     pose_bone.constraints.remove(follow)
@@ -3188,7 +3290,14 @@ class RigifyChains(bpy.types.Operator):
                     reference = rig.matrix_world @ rig_bone.matrix_local
                 constraint.inverse_matrix = reference.inverted()
             wired += 1
-        if linked:
+        if local_link:
+            trace.info("chain link: %d rotation link(s) (%d from a control of the same name, %d from the ORG "
+                       "copy) and %d pose-space transform link(s) for spline chains"
+                       % (local_rotation, local_from_control, local_from_org, local_pose))
+            if not local_from_control and local_rotation:
+                trace.info("chain link: no chain bone has a control of its own name on the rig, so every link "
+                           "points at the ORG copy")
+        elif linked:
             trace.info("chain children driven by world-space COPY_ROTATION (REPLACE): %d, CHILD_OF: %d"
                        % (rotation_driven, wired - rotation_driven))
         if missing:
@@ -4051,7 +4160,8 @@ class RigifyChains(bpy.types.Operator):
                 model, rig, chains, trace,
                 release_parents=bool(options.get("release_parents", True)),
                 resample=resample,
-                chain_deform=str(options.get("chain_deform", "rigid")).lower())
+                chain_deform=str(options.get("chain_deform", "rigid")).lower(),
+                chain_link=str(options.get("chain_link", "world")).lower())
         except Exception as error:  # noqa: BLE001 - a half-wired model must not be left silently
             import traceback
             trace.check("wiring the model to the chains", False, "%s" % error)
