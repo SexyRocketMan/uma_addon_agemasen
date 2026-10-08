@@ -31,13 +31,16 @@ user can send it back.
 
 The run is configured by a `Mode` (one rig type per group, or one per family) and a `Preset` that fills those
 fields. Two files hold the data, both under `<Blender config>/uma_addon/`: `rigify_chains.json` is the rules
-table (name pattern -> rigify type, the fallback for a character with no preset) plus the run options, and
-`presets/` holds one file per preset. `docs/PRESETS_AND_RULES.md` is the map; the handoff's section 9aa is how
-it got that way.
+table (name pattern -> rigify type) plus the run options, and `presets/` holds one file per preset - a set of
+answers somebody saved, keyed by nothing but its own name. **Nothing picks a preset automatically**: the rules
+table is what a run uses until a preset is chosen, so a model's rig is the same on every machine. The presets
+keyed by character and costume that this used to autodetect are retired (handoff 9bd).
+`docs/PRESETS_AND_RULES.md` is the map; the handoff's section 9aa is how it got that way.
 """
 import json
 import os
 import re
+import shutil
 import time
 
 import bpy
@@ -83,9 +86,22 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-55"
+BUILD_TAG = "chains-56"
 BUILD = BUILD_TAG + (
-    ": 2.15.0 - a family choice made in the setup now beats a pinned family. `fixed_families` "
+    ": 2.16.0 - a preset is keyed to nothing. The 99 presets read out of the animator's own rigify "
+    "metarigs (one per character and costume, keyed `1004_00`, `source: Meta_Base_Head_...`) were "
+    "autodetected from the model's `Chara_<id>_<costume>_Handle` bone or its hair skeleton, and their "
+    "answers beat the rules table - which is the second half of the reported mixed `super_copy` "
+    "result: on `1004_00` the preset had already seeded the hair families, and nothing in the panel "
+    "said so. Autodetection is gone, the `preset_cross_costume` option is gone with it, and the "
+    "derived files are moved whole into `<config>/uma_addon/presets_retired_character/` (nothing "
+    "deleted; anything that says `saved in Blender` is left alone). In their place a preset can now "
+    "answer by *group* as well as by family, so a fresh install gets two small generic ones - `One "
+    "control per bone` (every group `basic.super_copy`, the shape of the raw MMD rig) and `Chains "
+    "everywhere` - and the rules table is what a run uses until somebody picks a preset, which is "
+    "what the list opens on. Measured in presets_no_character_check.py: 17 of 17 checks, including "
+    "that the identity bone still reads `1004_00` and the preset keyed that way is in the list and "
+    "is *not* selected for it. Before that: 2.15.0 - a family choice made in the setup now beats a pinned family. `fixed_families` "
     "('the ears are always a chain') used to discard it outright, which is how setting every "
     "family to `basic.super_copy` silently left the ears as a chain - the reported mixed result, "
     "where some bones answer and some do not. With nothing asked for, the pin still decides (proved "
@@ -272,13 +288,6 @@ DEFAULT_RULES = {
         # (`1001_Special Week.pmx`, handoff 9ac). A constant is only kind while it is right, and that one is
         # not right on every export: the tail keeps a field, defaulting to the spline his rigs use.
         "fixed_families": {"Ear": "spines.basic_tail"},
-        # What a preset keyed for *another costume* of the same character may decide. The autodetect that picks
-        # one compares the model's hair skeleton (`detect_preset`), so when it fires the head bone set agrees -
-        # but costumes differ in their physics and accessories (measured: `1001_90` has no `Sp_Hi_Ribbon0` at all,
-        # `docs/RIG_HANDOFF.md` §5), and a skeleton match says nothing about those, so by default only the hair
-        # answers are taken and the rest stay with the rules table (which has the `unmatched_families` fallback
-        # behind it). "all" restores the old behaviour, "exact" refuses a cross-costume preset entirely.
-        "preset_cross_costume": "hair",
         # What a family the table says nothing about gets, instead of nothing. The table names the families the
         # animator's Maruzensky metarig carries; his other 154 packed rigs name many more (`Sp_He_Hair0/1/3/5`,
         # `Sp_He_Acc0`, the sleeves, `Sp_Si_Jacket0`, `Sp_Hi_CSkirt0`, belts, pantaloons, accessory ribbons), and
@@ -307,10 +316,6 @@ DEFAULT_RULES = {
         # baseline and "even"/"leaf" change where the mesh bends.
         "resample": "keep",
     },
-    # Empty on purpose: the profile table is per-character data generated from the animator's own rigs
-    # (`build_rules_profiles.py`), so the shipped file carries the key and its shape, not 69 entries that
-    # would be wrong for the next character. See the comment on `load_profiles`.
-    "profiles": {},
 }
 
 
@@ -379,9 +384,10 @@ def write_default_rules(path=None):
 # The groups, the families, and the presets (handoff 9y)
 #
 # The user chooses one rig type per **group** in Simple mode and one per **family** in Advanced mode, and a
-# **preset** fills those choices in. Nothing else decides anything: the rules table is what the `Default`
-# preset is built from, and the animator's own rigs are what the named presets are built from. That is the whole
-# model - there is no "match his rig, which means his rig or the table depending on the character" left.
+# **preset** fills those choices in when it is picked. Nothing else decides anything: the rules table is what the
+# `Default` entry is, and a named preset is a set of answers somebody saved. That is the whole model - there is no
+# "match his rig, which means his rig or the table depending on the character" left, and since `chains-56` there is
+# no autodetection either: the animator's own rigs are no longer read at run time (handoff 9bd).
 #
 # A *group* is where a family sits on the body, and four of them are the bone collections the rig already shows
 # in the viewport (`Hair`, `Skirt`, `Chest`, `Extras`). `Other` is the fifth: the sleeves, gloves, belts,
@@ -460,10 +466,10 @@ PRESET_CUSTOM = "custom"
 
 
 # The presets and the rules table are read from disk while the dialog is open - `preset_items` builds the enum
-# on every redraw, `sync_preset` and `preset_mismatch` run in `draw` - and reading 99 JSON files each time made
-# clicking the preset list stutter. Both are cached against a stamp of the folder (file count + its mtime), and
-# anything that writes a preset clears the cache, so the only case the stamp misses is a file edited outside
-# Blender, which the `Reload presets` button covers.
+# on every redraw, `sync_preset` and `preset_mismatch` run in `draw` - and reading one JSON file per preset each
+# time made clicking the preset list stutter (99 of them, when the character-keyed ones were still here). Both are
+# cached against a stamp of the folder (file count + its mtime), and anything that writes a preset clears the
+# cache, so the only case the stamp misses is a file edited outside Blender, which `Reload presets` covers.
 _PRESET_CACHE = {"stamp": None, "presets": {}, "loaded": False}
 _RULES_CACHE = {"stamp": None, "rules": None, "options": None, "source": None}
 
@@ -495,48 +501,74 @@ def preset_dir():
     return bpy.utils.user_resource("CONFIG", path=os.path.join("uma_addon", "presets"), create=True)
 
 
+def presets_retired_dir():
+    """Where the character-keyed presets were moved, once: next to the presets folder, not inside it.
+
+    Inside would be wrong: `preset_files` reads every `*.json` in the presets folder, so a subfolder of retired
+    presets would be one mis-placed file away from being in the list again. It is a sibling, and nothing reads it.
+    """
+    return os.path.join(bpy.utils.user_resource("CONFIG", path="uma_addon", create=True),
+                        "presets_retired_character")
+
+
 PRESET_README = """\
 Presets for the uma_addon Pumpkin Rig Setup
 ===========================================
 
-One file per preset. The file name is *not* significant - the `key` inside it is - but the
-generated ones are named after the character and costume they came from, e.g. 1004_00.json.
+One file per preset, and a preset is nothing but a saved set of answers: a rig type per bone group
+and/or per bone family, written down so it can be picked again.
 
 What a preset is
 ----------------
-A list of rig types, one per bone family:
-
+    "groups": {
+      "Hair":  "basic.super_copy",      one control per bone, no chain
+      "Skirt": "spines.basic_tail",     a chain that curls when a control is pushed
+      "Tail":  "limbs.spline_tentacle"  a chain driven by a spline
+    },
     "families": {
-      "Sp_He_Hair0": "basic.super_copy",     one control per bone, no chain
-      "Sp_He_Hair2": "spines.basic_tail",    a chain that curls when a control is pushed
-      "Sp_He_Hair4": "limbs.spline_tentacle" a chain driven by a spline
+      "Sp_He_Hair4": "limbs.spline_tentacle"    one family said on its own
     }
 
-Picking one in Blender fills the rig type fields and stops there - what the panel shows is
-what the rig gets. Ears and the tail have no field: his rigs never vary them (241 of 241
-measured), so they are fixed in the operator.
+`groups` answers for every family in that group, `families` answers for one family, so a small
+generic preset (three lines) and a specific one (twenty) are written the same way. Where both name
+the same family, `families` wins - the specific answer is the one somebody bothered to write. The
+groups are Hair, Skirt, Chest, Tail, Extras and Other; a family's group is derived from its own
+name, and Advanced mode shows every family in the model under those headings.
 
-Where these came from
----------------------
-Most of them were read out of the animator's own rigify metarigs - one per character and
-costume - so `source` names the metarig they came from and `signature` is the hair skeleton
-they were checked against. `"source": "saved in Blender"` means somebody made it here.
+Picking a preset in Blender fills the rig type fields and stops there - what the panel shows is
+what the rig gets. Nothing picks a preset for you: a run uses the rules table in
+../rigify_chains.json until you choose one, which is what the "Default" entry at the top of the
+list means. Ears have no field, because the animator's own rigs never vary them (241 of 241
+measured) - so they are fixed in the operator and no preset can change them.
+
+Making one
+----------
+Set the fields in Blender and press "Save as preset", or copy a file here and edit it. The file
+name is not significant - the `key` inside it is - and a file that will not parse is skipped with
+a line on the console rather than breaking the list.
 
 The folder next to this one
 ---------------------------
 `../rigify_chains.json` is the *rules table*: bone name patterns -> rig type, plus the options
-a run uses. It is what answers for a character with no preset, and what the "Default" preset
-is built from. Editing it changes every run that has no preset, so it is not where a
-per-character preference belongs - that is what a preset file is for.
+a run uses. That is what answers for every model nobody has saved a preset for, so it is where a
+change that should apply to every model belongs.
 """
 
 
 def write_preset_readme():
-    """A plain-language note in the folder itself, so it explains itself to whoever opens it."""
+    """A plain-language note in the folder itself, so it explains itself to whoever opens it.
+
+    Rewritten when the text differs rather than only when it is missing: it is this add-on's own documentation
+    sitting in the user's folder, and the one that described character-keyed presets was still there after they
+    were retired - a folder that documents a feature that no longer exists is worse than no note at all. Anything
+    else in the folder is left alone.
+    """
     path = os.path.join(preset_dir(), "README.txt")
-    if os.path.isfile(path):
-        return path
     try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                if handle.read() == PRESET_README:
+                    return path
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(PRESET_README)
     except OSError:
@@ -567,7 +599,11 @@ def preset_files():
         except (OSError, ValueError) as error:
             print("[rigify_chains] could not read preset %s (%s)" % (path, error))
             continue
-        if not isinstance(entry, dict) or not isinstance(entry.get("families"), dict):
+        if not isinstance(entry, dict):
+            continue
+        # a preset answers by group, by family, or both - the shape check has to accept either, or a small
+        # generic preset ("three groups, all basic.super_copy") would be skipped as an unreadable file
+        if not (isinstance(entry.get("groups"), dict) or isinstance(entry.get("families"), dict)):
             continue
         key = entry.get("key") or os.path.splitext(name)[0]
         entry = dict(entry)
@@ -590,203 +626,228 @@ def save_preset(key, entry):
     return path
 
 
-def legacy_presets(data):
-    """The `profiles` / `presets` sections of a rules file, as `{key: entry}`. May be empty.
+# The presets a fresh install starts with, written by `ensure_preset_files` the first time an operator runs -
+# the same shape as the shipped style (RigStyles), one file each, and the operator works without them.
+#
+# They are keyed by *group* rather than by family or character, which is what makes them generic: `Hair` means the
+# same thing on every model, and a model that has no `Hair` family simply has nothing for that answer to apply to.
+# Both of these are things the user asked for by name in the rework - "wrap the physics bones with super_copy so
+# the user can control them like they would the mmd rig" is the first one, spelled as a preset.
+SHIPPED_PRESETS = {
+    "One control per bone": {
+        "note": "basic.super_copy for every physics family: one control per bone, no chain - the shape the raw "
+                "MMD rig has, with the controls on the rigify rig instead. This is the preset for 'I want to pose "
+                "the physics the way I do on the MMD rig'",
+        "groups": {group: "basic.super_copy" for group in SIMPLE_GROUPS},
+    },
+    "Chains everywhere": {
+        "note": "spines.basic_tail for every physics family: one chain per family with tweak controls, curling "
+                "when a control is pushed. The other end of the same choice",
+        "groups": {group: "spines.basic_tail" for group in SIMPLE_GROUPS},
+    },
+}
 
-    Guards the shape of `data` as well as of its sections: a rules file that parses to a list or a string used to
-    reach `data.get` and raise from `execute` (found by the beta code review, handoff 9aq).
+
+def is_derived_preset(entry):
+    """Whether this preset is one of the character-keyed ones derived from the animator's own metarigs.
+
+    Measured on the 99 files this machine had: 69 were keyed to a character (`1004_00`, with `character`,
+    `costume` and `signature`) and 30 could not be keyed at all - their key is the metarig's own name
+    (`Meta_Base_Head_Mejiro_McQueen_Fair_Lady_of_The_Waves`) and they carry a `reason` saying why not
+    (`"costume 'fairladyofthewaves' cannot be keyed by name"`, `"character name did not match"`). Both kinds are
+    the animator's rigs rather than the user's choices, so both are retired.
+
+    A preset saved in Blender is never caught by this: older builds wrote `"source": "saved in Blender"` and this
+    one writes no `source` at all. The point is to put the animator's rigs aside, not the user's own answers.
     """
-    if not isinstance(data, dict):
-        return {}
-    legacy = data.get("presets") or data.get("profiles") or {}
-    if not isinstance(legacy, dict):
-        legacy = {}
-    entries = dict(legacy)
-    # the entries that could not be keyed to a character id are a *list* (source name + signature only)
-    unmapped = data.get("profiles_unmapped") or []
-    if isinstance(unmapped, dict):
-        for key, entry in unmapped.items():
-            entries.setdefault(key, entry)
-    else:
-        for entry in unmapped:
-            if isinstance(entry, dict) and entry.get("source"):
-                entries.setdefault(entry["source"], entry)
-    return entries
+    if any(entry.get(field) for field in ("character", "costume", "signature", "reason")):
+        return True
+    source = str(entry.get("source") or "")
+    return bool(source) and source != "saved in Blender"
 
 
 def ensure_preset_files(trace=None):
-    """One-time: move the presets out of the rules file into one file each, then tidy the rules file up.
+    """Housekeeping in the presets folder, once per run: write the shipped presets, retire character-keyed ones.
 
-    Called from `execute`, never from `draw`: it writes files and rewrites the rules file, and `preset_items`
-    runs on every redraw. The rules file keeps a timestamped backup next to it before anything is removed, so
-    the move is reversible without a version control system.
+    Called from `execute`, never from `draw`: it writes and moves files, and `preset_items` runs on every redraw.
+    Two separate jobs, both of them one-time by construction (each checks the destination before writing):
+
+    * the two generic presets in `SHIPPED_PRESETS` are written if their files are not there, so a fresh install's
+      preset list is not empty and the feature is visible without reading a document;
+    * presets derived from the animator's own rigs (`is_derived_preset`: keyed by character and costume, or by the
+      metarig's own name when no character could be matched) are *moved* out of the list, whole files, into
+      `<config>/uma_addon/presets_retired_character/` - rather than left in the list as 99 entries that look like
+      choices. Nothing is deleted and nothing is rewritten, so a file moved by mistake can be moved straight back.
     """
-    if preset_files():
-        return 0
-    path = config_path()
-    if not os.path.isfile(path):
-        return 0
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return 0
-    entries = legacy_presets(data)
-    if not entries:
-        return 0
-    write_preset_readme()
     written = 0
-    for key, entry in entries.items():
-        if not isinstance(entry, dict) or not entry.get("families"):
+    write_preset_readme()
+    for key, entry in SHIPPED_PRESETS.items():
+        path = os.path.join(preset_dir(), preset_filename(key) + ".json")
+        if os.path.exists(path):
             continue
         try:
             save_preset(key, entry)
             written += 1
         except (OSError, ValueError) as error:
             if trace is not None:
-                trace.info("could not write preset %s: %s" % (key, error))
-    if not written:
+                trace.info("could not write the preset %r: %s" % (key, error))
+    if written and trace is not None:
+        trace.info("%d shipped preset(s) written into %s: %s"
+                   % (written, preset_dir(), ", ".join(sorted(SHIPPED_PRESETS))))
+    moved = retire_character_presets(trace)
+    return written + moved
+
+
+def retire_character_presets(trace=None):
+    """Move the character-keyed presets out of the preset list, once. Returns how many files moved.
+
+    Which files those are is `is_derived_preset`'s answer, and they are moved to a sibling folder rather than
+    deleted: the user asked for them gone from the list, not gone from the disk, and a moved file is a copy-paste
+    away from being a preset again.
+    """
+    retired = {}
+    for key, entry in preset_files().items():
+        if not is_derived_preset(entry):
+            continue
+        source = entry.get("file")
+        if source and os.path.isfile(source):
+            retired[key] = source
+    if not retired:
         return 0
-    backup = os.path.join(os.path.dirname(path), "rigify_chains.before_preset_files.json")
-    try:
-        if not os.path.isfile(backup):
-            with open(backup, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, indent=2)
-        for section in ("profiles", "presets", "profiles_unmapped"):
-            data.pop(section, None)
-        data["presets_live_in"] = "presets/ - one file per preset; this file is the rules table and options"
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2)
-    except OSError as error:
+    folder = presets_retired_dir()
+    moved = 0
+    for key, source in sorted(retired.items()):
+        try:
+            if not os.path.isdir(folder):
+                os.makedirs(folder)
+            shutil.move(source, os.path.join(folder, os.path.basename(source)))
+            moved += 1
+        except OSError as error:
+            if trace is not None:
+                trace.info("could not move the preset %r out of the list: %s" % (key, error))
+    if moved:
+        forget_presets()
         if trace is not None:
-            trace.info("could not tidy %s: %s (the presets are written, so this is cosmetic)" % (path, error))
-        return written
-    if trace is not None:
-        trace.info("%d presets moved out of %s into %s, one file each; the rules file keeps the table and the "
-                   "options, and the previous version of it is saved as %s"
-                   % (written, os.path.basename(path), preset_dir(), os.path.basename(backup)))
-    return written
+            trace.info("%d character-keyed preset(s) moved out of %s into %s - presets are not keyed to a "
+                       "character any more, so nothing would have read them; nothing was deleted"
+                       % (moved, preset_dir(), folder))
+    return moved
 
 
-def load_profiles(path=None, force=False):
-    """Every preset, as `{key: {"families": {family: rigify type}, ...}}`. Read-only, cached, never raises.
+def load_profiles(force=False):
+    """Every preset, as `{key: entry}`. Read-only, cached, never raises.
 
-    One file per preset in `<Blender config>/uma_addon/presets/` - a preset is a per-character preference, so it
-    belongs in its own small file that can be added, edited, copied to someone else or deleted on its own,
-    rather than as a key inside the rules file next to the pattern table and the run options. A rules file that
-    still carries the old `profiles` section is read from as a fallback; `ensure_preset_files` moves it out.
+    One file per preset in `<Blender config>/uma_addon/presets/`: a set of answers belongs in its own small file
+    that can be added, edited, copied to someone else or deleted on its own, rather than as a key inside the rules
+    file next to the pattern table and the run options.
 
     Cached against `preset_stamp()`, because this is called from `draw` (`preset_items`, `sync_preset`,
-    `preset_mismatch`) and reading 99 files per redraw made the preset list stutter.
+    `preset_mismatch`) and reading one file per preset on every redraw made the preset list stutter.
     """
     stamp = preset_stamp()
     # `_PRESET_CACHE["loaded"]` rather than a truthiness test on the dict: "no presets yet" is a valid answer that
-    # an empty dict also spells, so on a fresh install every redraw re-listed the folder *and* re-read the rules
-    # file for the legacy fallback - the stutter this cache exists to prevent (code review, handoff 9ai).
+    # an empty dict also spells, so on a fresh install every redraw re-listed the folder - the stutter this cache
+    # exists to prevent (code review, handoff 9ai).
     if not force and _PRESET_CACHE["loaded"] and _PRESET_CACHE["stamp"] == stamp:
         return _PRESET_CACHE["presets"]
     presets = preset_files()
-    if not presets:
-        path = path or config_path()
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-            except (OSError, ValueError) as error:
-                print("[rigify_chains] could not read presets from %s (%s)" % (path, error))
-                data = {}
-            presets = {key: entry for key, entry in legacy_presets(data).items()
-                       if isinstance(entry, dict) and entry.get("families")}
     _PRESET_CACHE["stamp"] = stamp
     _PRESET_CACHE["presets"] = presets
     _PRESET_CACHE["loaded"] = True
     return presets
 
 
+
 def preset_label(key, entry):
-    """What to call a preset on screen: its own name, else the rig it came from, else the key.
+    """What to call a preset on screen: its own `name`, else its key.
 
-    `source` is a metarig name (`Meta_Base_Head_Maruzensky`), which is where the data came from rather than
-    anything about the character - so it is shown as a readable name (`Maruzensky`) and the key (`1004_00`) is
-    what identifies it. Nothing here is Maruzensky-specific: she is simply the character with the most rigs in
-    the pack, and therefore the one most of the derived presets were checked against.
+    The key is a human-readable name now (`One control per bone`), because nothing keys a preset to a character
+    any more - the derived ones were keyed `1004_00` and needed a `source` metarig name to be readable at all.
     """
-    if entry.get("name"):
-        return str(entry["name"])
-    source = str(entry.get("source") or "")
-    for prefix in ("Meta_Base_Head_", "Meta_", "RIG-"):
-        if source.startswith(prefix):
-            source = source[len(prefix):]
-            break
-    return source.replace("_", " ").strip() or key
+    return str(entry.get("name") or key)
 
 
-def preset_modes(entry):
-    """A preset's `{family: rigify type}` as `{family: MODE_*}`, reporting anything unmapped."""
-    modes, unknown = {}, []
-    for family, rig_type in (entry.get("families") or {}).items():
+def describe_preset(entry):
+    """One line about what a preset answers: `3 groups, 2 families`, for the dropdown's tooltip."""
+    groups = len(entry.get("groups") or {})
+    families = len(entry.get("families") or {})
+    parts = []
+    if groups:
+        parts.append("%d group%s" % (groups, "s" if groups != 1 else ""))
+    if families:
+        parts.append("%d famil%s" % (families, "y" if families == 1 else "ies"))
+    return ", ".join(parts) or "no answers"
+
+
+def preset_answers(entry, families):
+    """A preset's answers for *this* model's families: `({family: MODE_*}, [unmapped names])`.
+
+    `groups` answers for every family in that group and `families` for one family, so a small generic preset
+    (three groups) and a specific one (twenty families) are written the same way and applied by the same code.
+    Where both name the same family, `families` wins: the specific answer is the one somebody bothered to write.
+
+    Only families the model actually has are answered - a preset cannot name a family that did not exist when it
+    was made, and an answer for a family that is not here is not a change. A rig type no mode maps to is reported
+    rather than guessed at, and answered as a stub, which is the type that cannot invent a chain where the model
+    has none.
+    """
+    def mode_of(where, rig_type):
         mode = TYPE_MODES.get(rig_type)
         if mode is None:
-            unknown.append("%s=%s" % (family, rig_type))
-            mode = MODE_STUB
-        modes[family] = mode
-    return modes, unknown
+            unknown.append("%s=%s" % (where, rig_type))
+            return MODE_STUB
+        return mode
+
+    unknown = []
+    by_family = {family: mode_of(family, rig_type)
+                 for family, rig_type in (entry.get("families") or {}).items()}
+    by_group = {group: mode_of(group, rig_type)
+                for group, rig_type in (entry.get("groups") or {}).items()}
+    answers = {}
+    for item in families:
+        if item.family in by_family:
+            answers[item.family] = by_family[item.family]
+        elif item.group in by_group:
+            answers[item.family] = by_group[item.group]
+    return answers, unknown
 
 
 def preset_items(self, context):
-    """The `Preset` dropdown: the default, the detected character's own, then everything else.
+    """The `Preset` dropdown: `Default` (the rules table), `Custom`, then every preset in the folder.
 
-    A callback because the list comes from the rules file, which the user can point elsewhere with `Rules File`.
-    Blender requires an *index* default when `items` is a callback, so `default=0` - `preset_items` always
-    returns `PRESET_DEFAULT` first, which is the rules table's own answers.
+    A callback because the list is the folder's, and the folder can change while the dialog is open. Blender
+    requires an *index* default when `items` is a callback, so `default=0` - `Default` is always first and it is
+    the rules table's own answers.
 
-    `Preset_Filter` narrows the list (Blender has no search on an enum): the filter matches anywhere in the key,
-    the source name or the signature, so `maru`, `1004` and `Hair4:L,R` all find Maruzensky. The current
-    selection is always kept in the list, so narrowing cannot silently change what the run will use.
+    No preset is sorted to the front or picked by the model: the list is alphabetical and the run uses `Default`
+    until somebody chooses otherwise (`chains-56` took the character-keyed autodetection out - handoff 9bd).
+
+    `Preset_Filter` narrows the list (Blender has no search on an enum), matching anywhere in the name or the key.
+    The current selection is always kept in the list, so narrowing cannot silently change what the run will use.
     """
-    items = [(PRESET_DEFAULT, "Default (rules table)", "The rules table's own typing for every family - what "
-                                                       "an unrigged character gets"),
+    items = [(PRESET_DEFAULT, "Default (rules table)", "The rules table's own typing for every family - what a "
+                                                       "model gets until you choose otherwise"),
              (PRESET_CUSTOM, "Custom", "Whatever the fields below currently say")]
     try:
-        rules_file = getattr(self, "Rules_File", "") or ""
-        presets = load_profiles(bpy.path.abspath(rules_file) if rules_file else None)
+        presets = load_profiles()
     except Exception as error:  # noqa: BLE001
         # A dropdown must not raise, but it must not be silent either: this is the "the preset list is empty and
         # nothing says why" case, and a line on the console costs nothing (code review, handoff 9ai).
         presets = {}
         print("[rigify_chains] the preset list could not be read (%s: %s); the dropdown shows Default only"
               % (type(error).__name__, error))
-    identity = None
-    # The active armature first, because that is the one `_find_model_armature` rigifies: with two characters in
-    # one file, "selected objects" and "the active object" are not the same set, and the list *and* the run have
-    # to be talking about the same character (code review, handoff 9ai).
-    active = getattr(context, "active_object", None)
-    armatures = ([active] if active is not None and active.type == 'ARMATURE' else [])
-    armatures += [obj for obj in getattr(context, "selected_objects", []) if obj.type == 'ARMATURE']
-    armatures += [obj for obj in getattr(context, "scene", context).objects if obj.type == 'ARMATURE']
-    for armature in armatures:
-        identity, _bone = model_identity(armature)
-        if identity:
-            break
     needle = (getattr(self, "Preset_Filter", "") or "").strip().lower()
-    character = identity.split("_")[0] if identity else None
-    mine = sorted(key for key in presets if character and key.startswith(character + "_"))
-    others = sorted(key for key in presets if key not in mine)
     current = getattr(self, "Preset_Key", None)
     shown = 0
-    for key in mine + others:
+    for key in sorted(presets):
         entry = presets[key]
-        haystack = " ".join([key, preset_label(key, entry), str(entry.get("source") or ""),
-                             str(entry.get("signature") or ""), str(entry.get("character") or ""),
-                             str(entry.get("costume") or "")]).lower()
-        if needle and needle not in haystack and key != current:
+        label = preset_label(key, entry)
+        if needle and needle not in ("%s %s" % (label, key)).lower() and key != current:
             continue
-        # the character and costume key first (that is what identifies it), then where the data came from
-        label = "%s  %s" % (key, preset_label(key, entry))
-        detail = "%d families" % len(entry.get("families") or {})
-        if entry.get("signature"):
-            detail += "  (%s)" % entry["signature"]
-        items.append((key, label, detail))
+        # what it answers, and what it is for: a preset is a choice somebody made, so its own note is the useful
+        # tooltip when it has one
+        detail = entry.get("note") or describe_preset(entry)
+        items.append((key, "%s  %s" % (label, describe_preset(entry)), detail))
         shown += 1
     if needle and not shown:
         items.append((PRESET_DEFAULT, "no preset matches '%s'" % needle, "Clear the search box to see them all"))
@@ -840,21 +901,6 @@ def profile_family_of(name):
         else:
             break
     return "_".join(fields[:cut])
-
-
-def profile_signature(names):
-    """The model's hair/accessory skeleton: `Hair4:C,L,R|Hair2:L,R|Ear:L,R`, comparable across models."""
-    import re as _re
-    parts = {}
-    for name in names:
-        if not any(token in name for token in ("Hair", "Ribbon", "Acc", "Acce", "Cat", "Beard", "Ear")):
-            continue
-        match = _re.match(r"^Sp_He_(Hair\d|Ribbon\d|Acc\d|Acce\d|Cat\d|Beard\d)", name)
-        label = match.group(1) if match else ("Ear" if name.startswith("Ear_") else profile_family_of(name))
-        sides = {token for token in name.split("_")
-                 if token in ("L", "R", "C", "F", "B", "BL", "BR", "FL", "FR")}
-        parts.setdefault(label, set()).update(sides or {"C"})
-    return "|".join("%s:%s" % (label, ",".join(sorted(sides))) for label, sides in sorted(parts.items()))
 
 
 def family_group(family, bones, base_rules):
@@ -1036,7 +1082,7 @@ def resolve_rule_modes(model, rules, family_modes, table_modes, fixed, never, tr
             # A type the table names that this build does not know (`limbs.spline_tentacles` in a hand-edited
             # file) used to be applied verbatim to `rigify_type` while the panel's row showed it as a stub
             # (`family_defaults` falls back to MODE_STUB silently), so the rig disagreed with the panel and the
-            # failure surfaced later, from rigify. `preset_modes` reports the same case; this makes the table
+            # failure surfaced later, from rigify. `preset_answers` reports the same case; this makes the table
             # path report it too (code review, handoff 9ai).
             if base_rule is not None and str(base_rule.get("type")) not in TYPE_MODES:
                 trace.check("every rule's rig type is one this build knows", False,
@@ -1282,23 +1328,24 @@ def preset_table(self, context):
     """
     path = bpy.path.abspath(self.Rules_File) if getattr(self, "Rules_File", "") else None
     rules, options, source = load_rules(path)
-    presets = load_profiles(path)
+    presets = load_profiles()
     return rules, options, source, presets
 
 
-def family_defaults(rules, presets, preset_key, families, identity=None, cross_costume="hair", unmatched=None):
+def family_defaults(rules, presets, preset_key, families, unmatched=None):
     """What each family should start as: the preset's answer, else the rules table's, else Off.
 
     Returns `(modes, table_modes, source_label)`.
 
-    * `modes`      - what the field should say (the preset's value where it names the family);
+    * `modes`      - what the field should say (the preset's value where it answers for the family);
     * `table_modes` - what the rules table alone would say, kept so the resolver can tell "the user chose this"
       from "this is just the default". That distinction is what lets a family the table *splits*
       (`Sp_Ch_Ribbon0` is a one-bone stub in front and two side chains) keep both rules until someone actually
       asks for one answer for the whole family.
 
-    A preset cannot name a family that did not exist when it was made, so anything it does not name falls back
-    to the table - stated in the trace rather than guessed at silently.
+    A preset cannot answer for a family that did not exist when it was made, so anything it does not answer falls
+    back to the table - stated in the trace rather than guessed at silently. `preset_answers` is what decides
+    which families a preset answers for (by group, by family, or both).
 
     `unmatched` is `options.unmatched_families`, and it belongs here for one reason: without it the *panel* lied.
     A family no typed rule names was reported as `none` while the run typed it `basic.super_copy` through that
@@ -1306,17 +1353,6 @@ def family_defaults(rules, presets, preset_key, families, identity=None, cross_c
     fields decide") being false for a third of what it rigs, and the trace counting them as "left at the rules
     table's own answer". Measured by the beta code review (handoff 9aq) and cheap to get right: the fallback *is*
     the table's answer, so it seeds `table_modes` and the row reads it as `default` rather than as an override.
-
-    `identity` is the model's own `Chara_<id>_<costume>` key, and `cross_costume` says what a preset *keyed for a
-    different costume* may decide (`options.preset_cross_costume`):
-
-    * `"hair"` (the default) - only its **hair** families. The autodetect that chooses such a preset compares the
-      model's hair *skeleton* (`detect_preset`), so when it fires the head bone set genuinely agrees, and hair
-      typing is a statement about which bones are there. Physics and accessory families differ per costume
-      (`1001_90` has no `Sp_Hi_Ribbon0` at all, `docs/RIG_HANDOFF.md` §5) and a skeleton match says nothing about
-      them, so those stay with the rules table - which now has the `unmatched_families` fallback behind it.
-    * `"all"` - every family the preset names, the behaviour before this option existed.
-    * `"exact"` - nothing: a preset only applies to the exact character *and* costume it was saved for.
     """
     table_modes = {}
     for item in families:
@@ -1343,60 +1379,18 @@ def family_defaults(rules, presets, preset_key, families, identity=None, cross_c
         return modes, table_modes, "the rules table"
     entry = presets.get(preset_key)
     if entry is None:
-        return modes, table_modes, "the rules table (preset %s not found)" % preset_key
-    named, unknown = preset_modes(entry)
-    elsewhere = bool(identity) and preset_key != identity
-    held_back = []
-    if elsewhere and cross_costume in ("hair", "exact"):
-        kept = {}
-        for item in families:
-            if item.family not in named:
-                continue
-            if cross_costume == "hair" and item.group == "Hair":
-                kept[item.family] = named[item.family]
-            else:
-                held_back.append(item.family)
-        named = kept
+        return modes, table_modes, ("preset %s is not in the folder any more, so the rules table answered"
+                                    % preset_key)
+    answers, unknown = preset_answers(entry, families)
     changed = 0
-    for family, mode in named.items():
-        if family in modes:
-            changed += 1 if modes[family] != mode else 0
-            modes[family] = mode
-    label = "preset %s (%s, %d families, %d of them different from the table)" % (
-        preset_key, entry.get("source") or "no source", len(named), changed)
-    if held_back:
-        # Two different things to say, and saying the wrong one is worse than saying nothing: `exact` uses none of
-        # a cross-costume preset, `hair` uses part of it. The label is what the panel shows and what the trace
-        # keeps, so it has to describe what happened rather than share one sentence between the two.
-        if cross_costume == "exact":
-            label += ("; another costume's preset and preset_cross_costume is 'exact', so none of it was used "
-                      "and all %d family answer(s) came from the rules table" % len(held_back))
-        else:
-            label += ("; another costume's preset, so only its hair answers were used and %d other family "
-                      "answer(s) stayed with the rules table" % len(held_back))
+    for family, mode in answers.items():
+        changed += 1 if modes[family] != mode else 0
+        modes[family] = mode
+    label = "preset %s (%d famil%s, %d of them different from the table)" % (
+        preset_label(preset_key, entry), len(answers), "y" if len(answers) == 1 else "ies", changed)
     if unknown:
         label += "; unmapped: " + ", ".join(unknown[:3])
     return modes, table_modes, label
-def detect_preset(presets, model, trace=None):
-    """Which preset this model is, as `(key, why)`. Autodetection only picks a value for the preset field.
-
-    Two steps, in order of how strong the evidence is: the model's own `Chara_<id>_<costume>_Handle` bone names
-    the character and costume outright, and failing that the hair/accessory skeleton is compared - a signature
-    match is a strong hint, but only taken when exactly one preset matches it, because a wrong preset is a wrong
-    rig rather than a missing one.
-    """
-    identity, _bone = model_identity(model)
-    if identity and identity in presets:
-        return identity, "%s is in the presets (%s)" % (identity, presets[identity].get("source") or "no source")
-    signature = profile_signature([bone.name for bone in model.data.bones])
-    matches = [key for key, entry in presets.items() if entry.get("signature") == signature]
-    if len(matches) == 1:
-        return matches[0], ("no entry for %s; matched %s by its hair skeleton (%s)"
-                            % (identity or "this model", matches[0], signature))
-    if not presets:
-        return None, "the rules file has no presets"
-    return None, ("no entry for %s and %d skeleton matches, so the Default preset is used"
-                  % (identity or "this model", len(matches)))
 
 
 def apply_preset_update(self, context):
@@ -1486,8 +1480,8 @@ def sync_preset(self, context):
     """Fill the family rows from `Preset`, if they have not already been filled from it.
 
     This is the whole of what a preset does - it sets the fields and stops. There is no second resolution step
-    at run time, so the trace can always say "preset 1004_00, then Chest set to Off" and the answer cannot drift
-    from what the panel shows.
+    at run time, so the trace can always say "preset One control per bone, then Chest set to Off" and the answer
+    cannot drift from what the panel shows.
 
     Two things make it a function the panel calls rather than only an `update` callback:
 
@@ -1512,7 +1506,6 @@ def sync_preset(self, context):
     # same fault), so this would re-apply the preset on every redraw and silently revert a hand-edited family.
     if self.Preset_Key == self.Preset:
         return
-    self.Preset_Chosen = True        # a choice, so autodetection must not overrule it later in `execute`
     try:
         rules, options, _source, presets = preset_table(self, context)
     except Exception as error:  # noqa: BLE001 - a dialog must not raise
@@ -1521,16 +1514,7 @@ def sync_preset(self, context):
         print("[rigify_chains] picking preset '%s' failed (%s: %s); the rows keep what they had"
               % (self.Preset, type(error).__name__, error))
         return
-    # A preset keyed for another costume may only decide hair by default (`options.preset_cross_costume`): the
-    # autodetect behind such a preset compares hair skeletons, and physics differ per costume. The model's
-    # identity is what says whether the preset is this model's or a relative's.
-    #
-    # The module-level function, not `self._find_model_armature`: this runs inside an RNA `update` callback, where
-    # `self` is the properties wrapper and has no methods (see `find_model_armature`).
-    model_for_identity, _meshes = find_model_armature(context, Trace(False))
-    identity, _bone = model_identity(model_for_identity) if model_for_identity is not None else (None, None)
-    modes, table_modes, label = family_defaults(rules, presets, self.Preset, self.Families, identity,
-                                                str(options.get("preset_cross_costume", "hair")).lower(),
+    modes, table_modes, label = family_defaults(rules, presets, self.Preset, self.Families,
                                                 options.get("unmatched_families") or {})
     self.Populating = True
     try:
@@ -1651,35 +1635,27 @@ class RigifyChainPresetSave(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_preset"
     bl_label = "Save as preset"
-    bl_description = ("Write what the family fields currently say into one small JSON file in the presets "
-                      "folder, so it can be picked again - and so the next run on this character autodetects it. "
-                      "A preset is a per-character preference, so it gets its own file rather than a key inside "
-                      "the rules file")
+    bl_description = ("Write what the family fields currently say into one small JSON file in the presets folder, "
+                      "so it can be picked again. A preset is a saved set of answers and nothing more: it applies "
+                      "because you choose it, never on its own")
     bl_options = {'REGISTER'}
 
     Name: StringProperty(
         name="Preset name",
-        description="Defaults to the model's own <character>_<costume> id, which is what makes it autodetect. "
-                    "An existing preset is never overwritten unless Overwrite is ticked - the derived ones "
-                    "cannot be regenerated from inside Blender",
-        default="",
+        description="What to call this preset in the list. An existing preset is never overwritten unless "
+                    "Overwrite is ticked",
+        default="my-preset",
     )
     Data: StringProperty(name="Choices", default="", options={'HIDDEN'})
     Rules_File: StringProperty(name="Rules File", default="", options={'HIDDEN'})
     Overwrite: BoolProperty(
         name="Overwrite an existing preset",
-        description="Replace a preset that is already there. Off by default: the derived presets cannot be "
-                    "regenerated from inside Blender, and the name field defaults to one of their keys",
+        description="Replace a preset that is already there. Off by default, so a mistyped name cannot quietly "
+                    "replace one of your own presets",
         default=False,
     )
 
     def invoke(self, context, event):
-        if not self.Name:
-            model = next((obj for obj in context.scene.objects
-                          if obj.type == 'ARMATURE'
-                          and not RigifyChains._looks_like_control_rig(obj)), None)
-            identity, _bone = model_identity(model) if model is not None else (None, None)
-            self.Name = identity or "my-preset"
         return context.window_manager.invoke_props_dialog(self, width=380)
 
     def execute(self, context):
@@ -1706,9 +1682,10 @@ class RigifyChainPresetSave(bpy.types.Operator):
             return {'CANCELLED'}
         if existing is not None and not self.Overwrite:
             self.report({'ERROR'}, "A preset called '%s' already exists (%s). Tick Overwrite, or save under "
-                                   "another name." % (self.Name, existing.get("source") or "no source"))
+                                   "another name." % (self.Name, os.path.basename(existing.get("file") or
+                                                                                 self.Name)))
             return {'CANCELLED'}
-        payload = {"source": "saved in Blender", "families": dict(sorted(families.items()))}
+        payload = {"families": dict(sorted(families.items()))}
         if existing is not None:
             # keep what was there: an overwrite is recoverable without a version control system, and the file
             # it replaces is right next to it
@@ -1728,9 +1705,9 @@ class RigifyChainPresetReload(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_preset_reload"
     bl_label = "Reload presets"
-    bl_description = ("Read the preset folder again. The list is cached because it is read on every redraw and "
-                      "99 files made the dropdown stutter; anything saved from Blender refreshes it by itself, "
-                      "so this is for a file added or edited on disk")
+    bl_description = ("Read the preset folder again. The list is cached because it is read on every redraw, so "
+                      "this is for a file added or edited on disk; anything saved from Blender refreshes it by "
+                      "itself")
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -1850,7 +1827,7 @@ def preset_mismatch(operator):
     entry = presets.get(key)
     if entry is None:
         return 0
-    wanted, _unknown = preset_modes(entry)
+    wanted, _unknown = preset_answers(entry, operator.Families)
     return sum(1 for item in operator.Families
                if not item.fixed and item.family in wanted and item.mode != wanted[item.family])
 
@@ -1899,19 +1876,17 @@ class RigifyChains(bpy.types.Operator):
     )
     Preset: EnumProperty(
         name="Preset",
-        description="Fills the rig type fields with a stored set of choices. Autodetected from the model's "
-                    "Chara_<id>_<costume>_Handle bone; 'Default' is the rules table, and editing any field "
-                    "leaves the preset",
+        description="Fills the rig type fields with a stored set of answers. Nothing picks one automatically: "
+                    "'Default' is the rules table, and editing any field leaves the preset",
         items=preset_items,
         # an index, not a value: Blender requires that when `items` is a callback. `preset_items` always returns
-        # PRESET_DEFAULT first.
+        # `PRESET_DEFAULT` first.
         default=0,
         update=apply_preset_update,
     )
     Preset_Filter: StringProperty(
         name="Find a preset",
-        description="Narrow the preset list. Matches the key, the source metarig name and the hair skeleton "
-                    "signature; Blender has no search box on an enum, so this is what feeds it",
+        description="Narrow the preset list by name; Blender has no search box on an enum, so this is what feeds it",
         default="",
     )
     Preset_Key: StringProperty(
@@ -1924,7 +1899,6 @@ class RigifyChains(bpy.types.Operator):
     # Everything the dialog has to remember between redraws is an RNA property: Blender owns the operator
     # instance, and a Python attribute set while a callback is running does not survive (measured:
     # `AttributeError: 'UMA_OT_rigify_chains' object has no attribute '_preset_chosen'`).
-    Preset_Chosen: BoolProperty(name="Preset chosen", default=False, options={'HIDDEN'})
     Populating: BoolProperty(name="Filling the rows", default=False, options={'HIDDEN'})
     Preset_Note: StringProperty(name="Preset note", default="", options={'HIDDEN'})
     Forced_Advanced: StringProperty(name="Forced Advanced", default="", options={'HIDDEN'})
@@ -3331,7 +3305,6 @@ class RigifyChains(bpy.types.Operator):
             return {}, {}, options, source, None
         fixed = dict(options.get("fixed_families") or {})
         present = physics_families(model)
-        identity, _bone = model_identity(model)
         previous = {item.family: item.mode for item in self.Families} if keep else {}
         self.Populating = True
         try:
@@ -3344,8 +3317,7 @@ class RigifyChains(bpy.types.Operator):
                 item.bones = bones[0]
                 item.fixed = fixed.get(family, "")
             modes, table_modes, label = family_defaults(
-                rules, presets, self.Preset, self.Families, identity,
-                str(options.get("preset_cross_costume", "hair")).lower(),
+                rules, presets, self.Preset, self.Families,
                 options.get("unmatched_families") or {})
             for item in self.Families:
                 # a fixed family shows its type and is locked; everything else starts from the preset / table, or
@@ -3376,21 +3348,6 @@ class RigifyChains(bpy.types.Operator):
             self.Forced_Advanced = ", ".join(mixed)
             if mixed:
                 self.Mode = 'ADVANCED'
-            # A preset keyed for another costume of the same character is applied on a skeleton match, and the
-            # panel has to say that out loud: the user's report was `preset 1058_00` on a model whose own identity
-            # is `1058_40` (the Dot-O-Lantern costume), and nothing in the label said the two were not the same
-            # costume (handoff 9af). The choice itself is deliberate (`detect_preset`: one skeleton match is a
-            # strong hint), so this informs rather than refuses. This block belongs *here*, where `identity` is
-            # read, and not in `sync_preset` - it was put there by mistake first, and `sync_preset` is the first
-            # thing `draw` calls, so every redraw raised `NameError: identity` and the dialog came up empty
-            # (handoff 9ag).
-            if identity and self.Preset not in (PRESET_DEFAULT, PRESET_CUSTOM) and self.Preset != identity:
-                # The warning goes *first*: the note is clipped to a single panel line, and measured with the
-                # clause appended it read `preset 1058_00 (Meta_Base_Head_Meisho_Doto, 7 families, 5 of them
-                # different from the table) - picked for '1058_00': t...` - that is, the half that matters was
-                # exactly what fell off the end (handoff 9ag).
-                label = ("'%s' is another costume's preset - this model is '%s' (%s)"
-                         % (self.Preset, identity, label))
             self.Preset_Note = label if len(label) < 120 else label[:117] + "..."
         finally:
             self.Populating = False
@@ -3411,16 +3368,15 @@ class RigifyChains(bpy.types.Operator):
         return ({item.family: item.mode for item in self.Families}, self.table_modes_from_rows())
 
     def invoke(self, context, event):
-        """Fill the family rows for this model, pick a preset, and open the dialog.
+        """Fill the family rows for this model and open the dialog.
 
         The panel calls this operator with no properties at all (AddonPanels.py), so everything the run needs has
-        to be settled here: which families this model has, and which preset answers for them. Autodetection only
-        picks a *value for the preset field* - the preset then fills the fields below and gets out of the way,
-        which is the difference between this and the `Profile` dropdown it replaces.
+        to be settled here: which families this model has, and what the rules table says each of them gets. No
+        preset is picked for the user - the list opens on `Default`, which *is* the rules table, and a preset only
+        ever applies because somebody chose it (handoff 9bd).
         """
         trace = Trace(self.Debug)
         self._refresh_families(context, trace)
-        rules, options, source, presets = preset_table(self, context)
         model, _meshes = self._find_model_armature(context, trace)
         # The dialog *states* a detected step, so it has to be the step the run takes: "Step: Wire only - ...
         # this is the state a run that stopped before wiring leaves behind" printed above a field reading `Full`
@@ -3434,13 +3390,6 @@ class RigifyChains(bpy.types.Operator):
                 trace.info("step detected from the scene: %s - %s" % (detected, why))
             except Exception as error:  # noqa: BLE001 - a panel must never raise
                 trace.info("step could not be detected (%s)" % error)
-        if model is not None and not self.Preset_Chosen:
-            key, why = detect_preset(presets, model, trace)
-            if key:
-                self.Preset = key
-                self.Preset_Chosen = True
-                self._refresh_families(context, trace)
-            trace.info("autodetect: %s" % why)
         return context.window_manager.invoke_props_dialog(self, width=520)
 
     def _draw_model(self, context):
@@ -3519,7 +3468,7 @@ class RigifyChains(bpy.types.Operator):
         preset_search.prop(self, "Preset_Filter", text="", icon='VIEWZOOM')
         reload_row = preset_search.row(align=True)
         reload_row.operator(RigifyChainPresetReload.bl_idname, text="", icon='FILE_REFRESH')
-        # One short line at most. The detail (`preset 1004_00 (...), N families different from the table`) is in
+        # One short line at most. The detail (`preset <name> (...), N families different from the table`) is in
         # the trace, where it can be read at leisure; a dialog is not the place for a sentence.
         if self.Forced_Advanced:
             column.label(text="Multiple rig types per group (%s)" % self.Forced_Advanced)
@@ -3787,8 +3736,9 @@ class RigifyChains(bpy.types.Operator):
         # `From rules file` (whose whole job is to read `options["resample"]`, i.e. to write nothing), run again
         # - and the second run resamples `even` while the field and the trace say otherwise.
         options = dict(options)
-        # a rules file from an older build still holds the presets inside it: move them to their own files once,
-        # here rather than in the panel (this writes files)
+        # a rules file from an older build still holds the presets inside it: the presets are one file each now, so
+        # this writes the shipped ones and retires the character-keyed ones - here rather than in the panel
+        # (this writes and moves files)
         ensure_preset_files(trace)
         # and the display styles: the shipped `coolchou.json` is written here on a fresh install (never in
         # `draw`, which runs on every redraw and must not write files) - the same shape as the presets, one
@@ -3804,20 +3754,11 @@ class RigifyChains(bpy.types.Operator):
         trace.check("rules loaded", bool(active_rules), "%d rules from %s" % (len(active_rules), source))
 
         # ---- what each family gets (handoff 9y). The preset fills the fields; the fields decide. A script that
-        # calls this operator directly has an empty family list, so it is filled here too, from the same preset.
+        # calls this operator directly has an empty family list, so it is filled here too. No preset is picked
+        # here either: `Preset` is whatever the caller set, and `Default` is the rules table (handoff 9bd).
         identity, identity_bone = model_identity(model)
         trace.info("model identity: %s%s" % (identity or "no Chara_ bone",
                                             " (%s)" % identity_bone if identity_bone else ""))
-        if not self.Preset_Chosen and self.Preset in (None, PRESET_CUSTOM, PRESET_DEFAULT):
-            # reached only when nobody has picked a preset - a script calling this operator directly, since the
-            # panel path goes through `invoke` where the dialog can show the detected value
-            presets = load_profiles(
-                bpy.path.abspath(self.Rules_File) if self.Rules_File else None)
-            key, why = detect_preset(presets, model, trace)
-            trace.info("autodetect: %s" % why)
-            if key:
-                self.Preset = key
-                self.Preset_Chosen = True
         self._refresh_families(context, trace)
         chosen, table_modes = self._chosen_modes(trace)
         fixed = dict(options.get("fixed_families") or {})
@@ -4324,8 +4265,8 @@ class RigifyChainRules(bpy.types.Operator):
     def execute(self, context):
         path = config_path()
         if self.Action == 'SHOW':
-            # the presets folder, not the file: a preset is a per-character preference with its own file now, and
-            # that is what someone opening this wants to look at
+            # the presets folder, not the file: a preset has its own file now, and that is what someone opening
+            # this wants to look at
             folder = preset_dir()
             write_preset_readme()
             try:

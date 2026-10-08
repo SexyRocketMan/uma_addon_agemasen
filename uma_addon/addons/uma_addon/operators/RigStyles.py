@@ -111,7 +111,7 @@ white, FK is green, IK red, tweaks blue, face yellow, and `show_in_front` is off
 
 The folder next to this one
 ---------------------------
-`../presets/` holds per-character *rig type* choices (what a chain is made of), and
+`../presets/` holds saved *rig type* choices (what a chain is made of), and
 `../rigify_chains.json` is the rules table. Those decide what the rig is; this folder decides only how it
 looks.
 """

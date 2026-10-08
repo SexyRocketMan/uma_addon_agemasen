@@ -10,8 +10,8 @@ It is a clean rebuild. The upstream addon at commit `a6de9e1` is the base. Again
 adds three things:
 
 * **one place to build the rig**: *Pumpkin Rig Setup* runs MikuMikuRig's generation and then adds rigify
-  chains for the hair, ears, skirt, chest, tail and ribbon bones, typed by a rules table with per-character
-  presets and drawn in the animator's own display style;
+  chains for the hair, ears, skirt, chest, tail and ribbon bones, typed by a rules table (with presets of your
+  own as opt-in overrides, and drawn in the animator's own display style);
 * **one place to set the look**: the 18 shader settings live on the sun empty, a per-character override sits on
   each uma's root empty, and one driver per setting per material copy keeps every uma in the scene in step;
 * **face normals that survive morphs**: an optional step keeps a hidden static copy of the face and transfers its
