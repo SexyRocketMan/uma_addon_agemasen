@@ -86,9 +86,22 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-57"
+BUILD_TAG = "chains-58"
 BUILD = BUILD_TAG + (
-    ": 2.17.0 - a per-bone family keeps the model's own hierarchy, so its controls cascade. With every "
+    ": 2.17.1 - the trace tells the truth about where the model's own bones are. The line that reports "
+    "grouping them into the `MMD` collection said `visible now, switch it off` whatever `Chain Layers` said, "
+    "and the default is `Nothing` - so on a default run it said the opposite of the truth about the one "
+    "collection holding the user's own skeleton, which is what turned 'where did my face bones go' into a "
+    "support question. Measured on the reference model: 106 face bones in, 106 out, none removed, only "
+    "`Eye_L`/`Eye_R` carry a constraint, and every rest position unchanged in world space - they are hidden, "
+    "not gone, in two places: MMR hides the armature object and the `MMD` collection is off because `Chain "
+    "Layers` is `Nothing`. The line now names which of the two states it is in and how to switch it back. "
+    "Also measured while answering it: the rigify face rig (Face / Face (Primary) / Face (Secondary) = 88 "
+    "bones) is generated but wired to nothing - the model's constraints point at 147 rig bones and none is "
+    "face-related, and the mesh has no vertex group named after a rig-only bone - because MMR's mapping table "
+    "is 54 body and finger bones plus the eyes. The model's own face bones are still the ones the skin "
+    "follows, so posing them by hand works exactly as it did before the run. "
+    "Before that: 2.17.0 - a per-bone family keeps the model's own hierarchy, so its controls cascade. With every "
     "family set to `basic.super_copy`, grabbing the first control of a hair chain moved that one bone and "
     "nothing else: a rule's `parent` ('the hair hangs off the head') is a statement about the *family*, and "
     "a per-bone family makes every bone its own one-bone chain, so all six bones took the chain-root path and "
@@ -4112,11 +4125,24 @@ class RigifyChains(bpy.types.Operator):
         # toggles say - so unhiding it to check the wiring currently means 439 bones with no way to hide them
         # in groups. Purely additive: a visible collection changes nothing about what is drawn.
         if self.Step == 'FULL':
-            grouped = self._group_model_bones(model, trace, visible=(self.Chain_Layers != 'NONE'))
+            model_visible = self.Chain_Layers != 'NONE'
+            grouped = self._group_model_bones(model, trace, visible=model_visible)
             if grouped:
+                # The line used to read "visible now, switch it off" whatever `Chain_Layers` said, and the
+                # default is `Nothing` - so on a default run it told the reader the opposite of the truth about
+                # the one collection that holds their model's own bones. That is what turned "where did my face
+                # bones go" into a support question: they are all still there (measured: 106 face bones in, 106
+                # out, none removed, only `Eye_L`/`Eye_R` carry a constraint, rest positions unchanged in world
+                # space) but MMR hides the armature object and this collection is off by default.
+                if model_visible:
+                    detail = "visible now, switch it off in the armature's collection list"
+                else:
+                    detail = ("hidden now, because Chain Layers is 'Nothing' - switch '%s' on in the model "
+                              "armature's Bone Collections to pose the model's own bones by hand (they are all "
+                              "still here); note MMR hides the armature object itself too, so unhide that as "
+                              "well, or tick MMR's 'Hide mmd skeleton' before a run" % MODEL_COLLECTION_NAME)
                 trace.info("model bones grouped into '%s' (%d of them had no collection): %s"
-                           % (MODEL_COLLECTION_NAME, grouped,
-                              "visible now, switch it off in the armature's collection list"))
+                           % (MODEL_COLLECTION_NAME, grouped, detail))
 
         # ---- how the rig is drawn: the display style, last, because it is the only thing that touches nothing --
         style_applied, style_detail, final_xray = self._apply_display(
