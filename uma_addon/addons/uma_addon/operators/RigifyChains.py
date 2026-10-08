@@ -86,9 +86,22 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-56"
+BUILD_TAG = "chains-57"
 BUILD = BUILD_TAG + (
-    ": 2.16.0 - a preset is keyed to nothing. The 99 presets read out of the animator's own rigify "
+    ": 2.17.0 - a per-bone family keeps the model's own hierarchy, so its controls cascade. With every "
+    "family set to `basic.super_copy`, grabbing the first control of a hair chain moved that one bone and "
+    "nothing else: a rule's `parent` ('the hair hangs off the head') is a statement about the *family*, and "
+    "a per-bone family makes every bone its own one-bone chain, so all six bones took the chain-root path and "
+    "were attached to `spine.006` - their controls came out as siblings (measured: turning `Sp_He_Hair2_L_00` "
+    "30 degrees moved `_01` by 0.000000 m, while `Sp_Hi_MSkirt0_B` - whose rule names no parent - cascaded "
+    "0.061816 m then 0.123632 m in the same run). Nine of the eleven typed shipped rules name a parent. The "
+    "model's own hierarchy is now tried first, and only when the model parent is a bone this same run adds, so "
+    "a chain root whose model parent is a body part still lands where the rule says. After it, the same turn "
+    "moves `_01` 0.041799 m and `_02` 0.071755 m, each model bone following its own ORG. Under the shipped "
+    "rules the only thing that changes is four sub-bones (`Sp_Ch_Ribbon0_F_01`, `Sp_He_Hair0_C_01`, "
+    "`Sp_He_Hair3_L/R_01`): attached to their own chain instead of the chest or the head, with all 19 of the "
+    "run's own checks and all 43 chains identical (attachment_trace_dump.py, A/B). "
+    "Before that: 2.16.0 - a preset is keyed to nothing. The 99 presets read out of the animator's own rigify "
     "metarigs (one per character and costume, keyed `1004_00`, `source: Meta_Base_Head_...`) were "
     "autodetected from the model's `Chara_<id>_<costume>_Handle` bone or its hair skeleton, and their "
     "answers beat the rules table - which is the second half of the reported mixed `super_copy` "
@@ -2399,6 +2412,27 @@ class RigifyChains(bpy.types.Operator):
             best = candidates_within[0]
             return best[3], best[2]
 
+        # The model's own hierarchy first, when it points at a bone this run is adding (handoff 9be).
+        #
+        # A rule's `parent` is a statement about the *family* - "the hair hangs off the head" - and for a chain
+        # family it is only ever read for the group's index 0, which is the chain root, whose model parent is a
+        # body part. For a per-bone family (`basic.super_copy`: `_chains_for_rule` returns one single-bone group
+        # per bone, so every bone is an index-0 root) the same sentence was applied to every bone, and the whole
+        # chain was flattened onto the body part: measured (all families `super_copy`, one run, 30 degree turn)
+        # `Sp_He_Hair2_L` came out with all three controls parented to `ORG-spine.006` and turning the first one
+        # moved the next by 0.000000 m, while `Sp_Hi_MSkirt0_B` - whose rule names no parent at all, so it fell
+        # through to this branch - cascaded properly (0.061816 m, then 0.123632 m). Nine of the eleven typed
+        # shipped rules name a `parent`, so this was most of the all-`super_copy` answer, and it is the difference
+        # between "one control per bone" and "one control per bone, and the chain still bends as a chain".
+        #
+        # This is the same test the no-rule-parent path below has always made; it is only *earlier* now, and only
+        # for a model parent that this same run has already created. A bone whose model parent is a body part
+        # (`Head`, `Knee_L`) never matches it, so a rule that names an attachment still decides that, and a chain
+        # root still lands where the rule says.
+        same_run = getattr(self, "_added_bone_names", None) or set()
+        if model_parent and model_parent in same_run and model_parent in metarig.data.edit_bones:
+            return model_parent, "same family", 0.0, model_parent
+
         # A rule can name the attachment. The name may be a metarig bone, or a *model* bone - which is the
         # steadier way to say it, because MMR's metarig does not use the model's names: there is no bone
         # called `Head` in it at all, the model's `Head` sits exactly on its `spine.006`. Resolving through
@@ -2429,9 +2463,11 @@ class RigifyChains(bpy.types.Operator):
             # run is about to add it. Those hang off that bone, exactly as the model has them: a chain family
             # switched to `Follow` used to fail its attachment check on every bone after the first (measured on
             # Maruzensky's hip ribbon: 8 checks, all "no metarig bone within 0.15 m of the model parent").
-            same_run = getattr(self, "_added_bone_names", None) or set()
-            if model_parent in same_run and model_parent in metarig.data.edit_bones:
-                return model_parent, "same family", 0.0, model_parent
+            #
+            # The case this branch could not reach - a rule *does* name a parent, and the bone's model parent is a
+            # bone this run adds later - is handled where that bone is actually missing: the branch at the top of
+            # this function fires only once the parent exists, and `_add_chains_to_metarig` defers the ones that
+            # arrive before it, so the second pass re-parents them (handoff 9be).
             target = space @ parent_head
             hit = closest(target, 1e-4)
             if hit is not None:
@@ -2624,7 +2660,16 @@ class RigifyChains(bpy.types.Operator):
                             trace.info("chain %-30s %s" % (name, detail))
                             # a chain root attached by the blind fallback follows the wrong body part:
                             # this is what left the ears on the spine while the head moved
-                            if how in ("fallback", "root", "none", "nearest-far"):
+                            #
+                            # ...and a bone whose model parent is a bone this run adds *later* is deferred for the
+                            # same reason, whichever branch answered: `_metarig_parent_for` can only hand back the
+                            # model's own parent once that bone exists, and `model_parent in geometry` with the
+                            # bone not in the metarig yet means exactly "this run is about to add it". The second
+                            # pass below re-parents it, so a per-bone family keeps the model's hierarchy even when
+                            # the bones are created child-first (handoff 9be).
+                            later = (model_parent in geometry and model_parent not in edit_bones
+                                     and model_parent != name)
+                            if how in ("fallback", "root", "none", "nearest-far") or later:
                                 deferred_attachments.append({
                                     "name": name, "parent": parent_name, "how": how,
                                     "distance": distance, "model_parent": model_parent,
