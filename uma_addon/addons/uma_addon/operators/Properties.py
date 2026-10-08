@@ -373,6 +373,25 @@ class UmaScene(bpy.types.PropertyGroup):
                     "one; untick it if a future shader or model breaks, and 'Remove face normal transfer' takes "
                     "the copy and the transfer out again. See docs/SHADER_LOOK.md")
 
+    face_normals_split: BoolProperty(
+        name="Separate the face first",
+        default=True,
+        description="When the face is not its own object: separate its polygons into their own object before the "
+                    "transfer, so the transfer runs over the face's corners only. The transfer's cost is set by "
+                    "the size of the mesh it writes to, not by how much it writes - measured +12.5 ms on a "
+                    "12,450-vertex body against +1.4 ms on its 1,635-vertex face - and limiting it with a vertex "
+                    "group saves only 0.9 ms of that. Models whose face already ships as its own object are left "
+                    "alone. Untick it to fall back to the vertex-group transfer on one mesh")
+
+    face_normals_prune_morphs: BoolProperty(
+        name="No duplicated morphs",
+        default=True,
+        description="A separated piece keeps every shape key, including the ones that cannot move it, so a viewer "
+                    "listing the scene's morphs shows each of them twice. This removes from each piece the keys "
+                    "whose vertex offsets are all zero there - which cannot change that piece under any value - "
+                    "measured 118 of 193 keys on the body and 36 on the face for one model. Untick it to keep "
+                    "every key on both pieces")
+
     # Which shading groups the panel has folded away, as a bitmask over the groups in the settings table, one for
     # the global settings and one for the selected character's overrides. Here rather than on the objects
     # themselves, because a UI state has no business appearing in their Custom Properties list.

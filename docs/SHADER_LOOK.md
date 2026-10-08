@@ -130,18 +130,41 @@ optional step below keeps the normals still:
   head and the transferred normals keep facing the right way when the character looks around;
 * a **Data Transfer modifier** on the real face takes **corner custom normals** from that copy with **`TOPOLOGY`**
   mapping - corner for corner, which is exact because the copy is the same mesh;
-* the modifier is left **live**, not baked, so the copy stays the thing that decides.
+* the modifier is left **live**, not baked, so the copy stays the thing that decides;
+* **the face is separated into its own object first** ("Separate the face first", on by default) when it is not
+  already one, so the transfer only ever runs over the face's corners. This is Spork's own setup, and it is not
+  cosmetic: the transfer's cost is set by the size of the mesh it writes to, and the same model measures **+1.4 ms**
+  per evaluation with the face as its own object against **+12.5 ms** for the whole mesh. Limiting the whole-mesh
+  transfer with the old `UMA_Face` vertex group saved 0.9 ms of that - a group changes which corners are *written*,
+  never the work done per corner - so the group is now only the fallback for when the separation fails;
+* shapes are separated as Blender separates them, not rebuilt: the piece keeps the parent (and parent type), the
+  collections, every material slot, every vertex group and the same armature modifier, and its vertices come out at
+  exactly the coordinates they had. Measured with the head turned 30 degrees and the whole rig turned and moved:
+  rest, the deformation and the return to rest are all identical to **0.00e+00 m**, and the two pieces' vertices
+  together are exactly the original mesh's vertices.
 
 **It is on by default** ("Face normals that survive morphs" in the Processing Model panel, next to the other
 shading options) because the manual setup it automates is the usual one. Untick it to opt out. The row's two
 buttons are for doing it by hand: the driver icon re-runs it, the bin removes the copy and the transfer again.
+Beside them, two options:
 
-Two things worth knowing:
+* **"Separate the face first"** - as above. Untick it and the step falls back to the vertex group on one mesh;
+* **"No duplicated morphs"** (on by default) - a separated piece keeps the whole shape-key list, so a viewer
+  listing the scene's morphs shows every one of them twice: that is the reported *"two sets of identical morphs
+  appearing in the viewer"*. The step removes from each piece the keys whose vertex offsets are all zero **there**
+  and therefore cannot change it under any value, while keeping every key that moves nothing anywhere on the body so
+  no morph name is lost. Measured on a 12,450-vertex model: the body drops 118 keys and the face 36, 236 entries
+  where a plain split would list 386, with all 193 names still present.
 
-* **on a model whose face is not a separate object** - which is what a plain mmd_tools import gives you, one mesh
-  holding body, face, brows, hair and tail - the transfer is limited to a **`UMA_Face` vertex group** built from
-  the face materials, so the body's own normals keep following its deformation. On a model where the face *is* its
-  own object (the setup this automates), it transfers to that object whole;
+Three things worth knowing:
+
+* **re-run the step after editing the mesh's topology.** `TOPOLOGY` mapping needs the same corner count on both
+  sides, so separating a slot, joining an object in or deleting faces under a live transfer leaves it writing
+  garbage - the copy is refreshed automatically on the next run (it is compared with the face and rebuilt when they
+  no longer match), but the *next run* is what fixes it;
+* **"Remove face normal transfer" leaves the separated face where it is.** Joining it back is one keystroke (select
+  the body and the face, `Ctrl`+`J`) and it is reported rather than done, because a silent rejoin would change what
+  your export sees;
 * **the copy is hidden from the viewport and from renders**, but it is a real object in the file: export with the
   option off, or remove it first, if your export step does not skip hidden objects. Whether a live modifier's
   normals reach an exported PMX/FBX is worth checking per exporter - baking the modifier is the safe answer if it

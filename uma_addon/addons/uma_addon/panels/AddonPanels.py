@@ -76,6 +76,12 @@ class ModelProcessPanel(BasePanel, bpy.types.Panel):
         if face_normals_module is not None:
             row.operator(FaceNormalsApply.bl_idname, text="", icon='DRIVER')
             row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
+        if scene_props.face_normals:
+            # the two settings the step's cost and the viewer's morph list depend on, only worth showing when the
+            # step is on at all
+            options = layout.row(align=True)
+            options.prop(scene_props, "face_normals_split")
+            options.prop(scene_props, "face_normals_prune_morphs")
         layout.operator(FixMini.bl_idname, icon="SHADERFX")
 
         layout.label(text="Use shape keys to drive ear bones")

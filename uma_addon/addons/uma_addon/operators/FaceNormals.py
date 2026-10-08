@@ -33,8 +33,16 @@ finds the face either way:
 
 * **a separate face object** exists (name or materials say `face`/`mayu`) - transfer to it, whole object, exactly as
   the recipe does;
-* **the face is a material in a shared mesh** - build a vertex group of the face materials' vertices and point the
-  modifier's `vertex_group` at it, so only those corners take the static normals.
+* **the face is a material in a shared mesh** - separate those polygons into their own object first
+  (`face_normals_split`, on by default) and transfer to that, which is the shape Spork's own file has. This is not
+  only tidier: the transfer's cost is set by the size of the mesh it writes to, and measured on a 12,450-vertex
+  model the separated face costs **+1.4 ms** per evaluation against **+12.5 ms** for the whole mesh. Limiting the
+  whole-mesh transfer with a vertex group - the previous approach, still the fallback when the separation fails -
+  saves 0.9 ms of that, because the group changes which corners are written and not the per-corner work.
+
+A separated piece keeps the whole shape-key list, which is why the step also prunes the keys that cannot move each
+piece (`face_normals_prune_morphs`, on by default): the reported *"two sets of identical morphs appearing in the
+viewer"* is a split mesh listing every morph twice.
 """
 
 import bpy
@@ -42,7 +50,7 @@ import bpy
 from bpy.types import Operator
 
 #: The tag reported by the operators and printed when the step runs, so a report can be told from a stale build.
-TAG = "face-normals-1"
+TAG = "face-normals-2"
 
 #: Names the copy and the modifier get, and the custom property that marks the copy as ours.
 COPY_SUFFIX = "_normals_static"
@@ -52,6 +60,10 @@ COPY_COLLECTION_NAME = "UMA Face Normals"
 MODIFIER_NAME = "UMA Face Normals"
 COPY_MARKER = "uma_face_normals_copy"
 FACE_GROUP_NAME = "UMA_Face"
+
+#: What a separated face object is called, and the marker that says the step made it.
+FACE_SUFFIX = "_face"
+SPLIT_MARKER = "uma_face_normals_split"
 
 #: Material name fragments that mean "this is the face" - the same vocabulary `Shading` uses to pick materials.
 FACE_HINTS = ("face", "mayu")
@@ -100,23 +112,215 @@ def head_bone(armature):
 def face_group_for(mesh_obj, key=FACE_GROUP_NAME):
     """A vertex group holding the face materials' vertices, created or refreshed, or None when there is no face.
 
-    This is what makes the step work on a model whose face is not a separate object: the transfer is limited to
-    these vertices, so the body's own normals keep following its deformation.
+    This is the *fallback* way to keep the transfer off the body: it is what the step used before it learned to
+    separate the face, and it is still what runs when the separation is switched off or fails. It only limits which
+    corners are written - it does not make the transfer any cheaper, which is measured in
+    `face_normals_cost_check.py`: on a 12,450-vertex body the group saves 0.9 ms of a 12.5 ms cost.
     """
-    indices = {index for index, slot in enumerate(mesh_obj.material_slots)
-               if is_face_material(slot.material)}
-    if not indices:
-        return None
-    vertices = set()
-    for polygon in mesh_obj.data.polygons:
-        if polygon.material_index in indices:
-            vertices.update(polygon.vertices)
+    vertices = face_vertices(mesh_obj)
     if not vertices:
         return None
     group = mesh_obj.vertex_groups.get(key) or mesh_obj.vertex_groups.new(name=key)
     group.remove(range(len(mesh_obj.data.vertices)))
     group.add(sorted(vertices), 1.0, 'REPLACE')
     return group
+
+
+def face_vertices(mesh_obj):
+    """The vertices of the polygons that *use* a face material, or an empty set.
+
+    By polygon, not by material slot, and that is not a detail: separating copies **every** material slot onto both
+    pieces, so a slot-based test says the body is still full of face materials after its face polygons have left.
+    That is how a separated body would keep getting its own (pointless) transfer with an empty vertex group.
+    """
+    indices = {index for index, slot in enumerate(mesh_obj.material_slots)
+               if is_face_material(slot.material)}
+    if not indices:
+        return set()
+    vertices = set()
+    for polygon in mesh_obj.data.polygons:
+        if polygon.material_index in indices:
+            vertices.update(polygon.vertices)
+    return vertices
+
+
+def face_polygon_count(mesh_obj):
+    """How many of this object's polygons belong to a face material."""
+    indices = {index for index, slot in enumerate(mesh_obj.material_slots)
+               if is_face_material(slot.material)}
+    if not indices:
+        return 0
+    return sum(1 for polygon in mesh_obj.data.polygons if polygon.material_index in indices)
+
+
+def is_whole_face(mesh_obj):
+    """Is this object the face and nothing but the face - by the polygons it actually has, not by its slots."""
+    total = len(mesh_obj.data.polygons)
+    if not total:
+        return False
+    if "face" in mesh_obj.name.lower() or "mayu" in mesh_obj.name.lower():
+        return True
+    return face_polygon_count(mesh_obj) == total
+
+
+def split_face_into_object(context, mesh_obj, trace=None):
+    """Separate the face's polygons into their own object and return it (or None, with the reason).
+
+    This is Spork's shape, and it is the whole point of the option: his static copy feeds a face *object*, so the
+    transfer only ever touches the face's corners. On this fork's own pipeline the same model is usually one mesh,
+    so the face has to be separated first - with Blender's own operator, chosen deliberately over hand-building a
+    mesh: it is exactly what a user doing this by hand gets, which means the vertex groups, the shape keys, the
+    material slots, the parenting and the armature modifier come across the way Blender makes them rather than the
+    way this add-on guesses.
+
+    What is *not* left as Blender makes it: the new object is named (`.001` is not an answer), it is marked as ours,
+    and its shape keys are pruned by `prune_dead_shape_keys` unless that is switched off.
+    """
+    before = {obj.name for obj in context.scene.objects}
+    # the selection is remembered: separating leaves the new piece selected, and `ApplyShader`'s poll wants exactly
+    # one selected object - so a run that ended with two would leave the panel's next operator refusing to run
+    # (measured: `bpy.ops.uma.apply_shader.poll() failed, context is incorrect` in face_normals_check.py)
+    selection = [obj for obj in context.selected_objects]
+    active = context.view_layer.objects.active if getattr(context, "view_layer", None) is not None else None
+    try:
+        with context.temp_override(object=mesh_obj, active_object=mesh_obj, selected_objects=[mesh_obj],
+                                   selected_editable_objects=[mesh_obj]):
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='DESELECT')
+            bpy.ops.object.mode_set(mode='OBJECT')
+            indices = {index for index, slot in enumerate(mesh_obj.material_slots)
+                       if is_face_material(slot.material)}
+            for polygon in mesh_obj.data.polygons:
+                polygon.select = polygon.material_index in indices
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.separate(type='SELECTED')
+            bpy.ops.object.mode_set(mode='OBJECT')
+    except Exception as error:  # noqa: BLE001 - the caller falls back to the vertex-group transfer
+        if trace is not None:
+            trace.info("could not separate the face of %r (%s: %s); the transfer stays on the whole mesh, limited "
+                       "by a vertex group" % (mesh_obj.name, type(error).__name__, error))
+        return None
+
+    new = [obj for obj in context.scene.objects if obj.name not in before]
+    if len(new) != 1:
+        if trace is not None:
+            trace.info("separating %r produced %d object(s), expected 1" % (mesh_obj.name, len(new)))
+        return None
+    piece = new[0]
+    try:
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        for obj in selection:
+            obj.select_set(True)
+        if active is not None:
+            context.view_layer.objects.active = active
+    except Exception:  # noqa: BLE001 - the selection is a courtesy, not part of the result
+        pass
+    piece.name = unique_name(mesh_obj.name + FACE_SUFFIX)
+    if piece.data is not None:
+        piece.data.name = piece.name
+    piece[SPLIT_MARKER] = True
+    piece["uma_face_normals_split_of"] = mesh_obj.name
+    mesh_obj["uma_face_normals_split_into"] = piece.name
+    if trace is not None:
+        trace.info("separated the face of %r into %r: %d polygon(s), %d vertex/vertices, %d vertex group(s), "
+                   "parent %s, collections %s"
+                   % (mesh_obj.name, piece.name, len(piece.data.polygons), len(piece.data.vertices),
+                      len(piece.vertex_groups), getattr(piece.parent, "name", None),
+                      [collection.name for collection in piece.users_collection]))
+    return piece
+
+
+def unique_name(wanted):
+    """`wanted`, or `wanted.001` and up, so a second run cannot silently join two different objects."""
+    if wanted not in bpy.data.objects:
+        return wanted
+    index = 1
+    while "%s.%03d" % (wanted, index) in bpy.data.objects:
+        index += 1
+    return "%s.%03d" % (wanted, index)
+
+
+def shape_key_effect(obj, key, basis):
+    """How many vertices this shape key moves on this object, and by how much at most (metres).
+
+    `ShapeKeyPoint.co` is the vertex's **absolute** position for that key, not an offset, so the offset is against
+    the `Basis` key. Reading `co` as the offset makes every key look like it moves every vertex, which is how the
+    first version of the analysis behind this function convinced itself that no key could ever be pruned.
+    """
+    moved, biggest = 0, 0.0
+    key_points = key.data
+    base_points = basis.data
+    for index, point in enumerate(key_points):
+        base = base_points[index].co
+        offset = abs(point.co.x - base.x) + abs(point.co.y - base.y) + abs(point.co.z - base.z)
+        if offset > 1e-9:
+            moved += 1
+            biggest = max(biggest, offset)
+    return moved, biggest
+
+
+def dead_shape_keys(obj):
+    """The names of this object's shape keys that cannot move it: every offset they store is zero here.
+
+    `Basis` is never one of them, and a key that moves *nothing* anywhere is still a name the model has - so the
+    caller decides what to do with those.
+    """
+    keys = getattr(obj.data, "shape_keys", None)
+    if keys is None or len(keys.key_blocks) < 2:
+        return []
+    basis = keys.key_blocks.get("Basis") or keys.key_blocks[0]
+    dead = []
+    for key in list(keys.key_blocks):
+        if key == basis or key.name == "Basis":
+            continue
+        moved, _biggest = shape_key_effect(obj, key, basis)
+        if moved == 0:
+            dead.append(key.name)
+    return dead
+
+
+def remove_shape_keys(obj, names, trace=None):
+    """Remove these keys from this object, and return how many went."""
+    keys = getattr(obj.data, "shape_keys", None)
+    if keys is None or not names:
+        return 0
+    wanted = set(names)
+    removed = 0
+    for key in list(keys.key_blocks):
+        if key.name in wanted and key.name != "Basis":
+            # `Object.shape_key_remove` rather than poking the key collection: it is the documented call and it
+            # takes the key's driver channel with it
+            obj.shape_key_remove(key)
+            removed += 1
+    if trace is not None and removed:
+        trace.info("removed %d shape key(s) from %r that cannot move it (%s%s)"
+                   % (removed, obj.name, ", ".join(sorted(wanted)[:5]), ", ..." if len(wanted) > 5 else ""))
+    return removed
+
+
+def prune_split_morphs(body, piece, trace=None):
+    """Prune the morphs each piece cannot use, without losing a morph *name* the model has.
+
+    A separated piece keeps the whole shape-key list, so a viewer listing the scene's morphs shows each one twice -
+    the reported *"two sets of identical morphs appearing in the viewer"*. The rule:
+
+    * the **face** drops every key that cannot move it (they belong to the body, which keeps them);
+    * the **body** drops every key that cannot move it **and** can still move the face - so a key that moves nothing
+      anywhere stays on the body once, and no name disappears from the model.
+
+    Measured on a 12,450-vertex model: the face drops 36 keys and the body 114, leaving 157 + 79 = 236 entries
+    where a naive split would list 386, with the same 193 names present as before.
+    """
+    dead_body = set(dead_shape_keys(body))
+    dead_face = set(dead_shape_keys(piece))
+    removed_face = remove_shape_keys(piece, dead_face, trace)
+    removed_body = remove_shape_keys(body, dead_body - dead_face, trace)
+    return {"face_keys_removed": removed_face, "face_keys_left": len(piece.data.shape_keys.key_blocks)
+            if piece.data.shape_keys else 0,
+            "body_keys_removed": removed_body, "body_keys_left": len(body.data.shape_keys.key_blocks)
+            if body.data.shape_keys else 0,
+            "keys_dead_on_both_pieces_left_on_the_body": len(dead_body & dead_face)}
 
 
 def find_copy(face_obj):
@@ -161,6 +365,11 @@ def make_copy(context, face_obj, armature, head, trace=None):
         collection.objects.link(copy)
     copy[COPY_MARKER] = True
     copy["uma_face_normals_for"] = face_obj.name
+    # the copy inherits every custom property of the face, including the markers of the split that made it - which
+    # is how a copy came to look like a separated face piece to anything scanning for `SPLIT_MARKER`
+    for key in (SPLIT_MARKER, "uma_face_normals_split_of", "uma_face_normals_split_into"):
+        if key in copy.keys():
+            del copy[key]
 
     # static with respect to *morphs*: the shape keys go, so nothing moves the copy's geometry.
     copy.shape_key_clear()
@@ -297,44 +506,87 @@ def refresh_copy_data(copy, face_obj):
 
 
 def faces_in(context, objects=None):
-    """The objects this step should act on, with the reason each was chosen."""
+    """The objects this step should act on, with the reason each was chosen.
+
+    The test is the polygons the object actually has, not its material slots: separating a mesh copies **every**
+    slot onto both pieces, so a slot-based test keeps calling the body a face object long after its face polygons
+    have left, and the body then gets a transfer with an empty vertex group - cost with no effect.
+    """
     if objects is None:
         objects = [obj for obj in context.scene.objects if obj.type == 'MESH']
     found = []
     for obj in objects:
+        # the static copy is ours and is not a target; the *separated face* is a target like any other - it is
+        # excluded from being split again by `is_whole_face`, not by its marker, so that a second run still sets its
+        # transfer up
         if obj.get(COPY_MARKER):
             continue
-        slots = [slot.material for slot in obj.material_slots]
+        polygons = len(obj.data.polygons)
+        face_polygons = face_polygon_count(obj)
         named_face = "face" in obj.name.lower() or "mayu" in obj.name.lower()
-        face_materials = [material for material in slots if is_face_material(material)]
         if named_face:
             found.append((obj, "its name says face"))
-        elif face_materials and len(face_materials) == len([material for material in slots if material]):
-            found.append((obj, "its materials are all face materials"))
-        elif face_materials:
-            found.append((obj, "%d of %d material slot(s) are face materials, so the transfer is limited to their "
-                                "vertices" % (len(face_materials), len([m for m in slots if m]))))
+        elif polygons and face_polygons == polygons:
+            found.append((obj, "every polygon of it uses a face material"))
+        elif face_polygons:
+            found.append((obj, "%d of its %d polygon(s) use a face material" % (face_polygons, polygons)))
     return found
+
+
+def split_off_face(context, face_obj, trace=None):
+    """Separate `face_obj`'s face polygons into their own object and prune both pieces' dead morphs.
+
+    Split into its own function because the settings decide whether it happens at all: with
+    `face_normals_split` off (or when the separation fails) the caller keeps the old vertex-group transfer, and
+    with `face_normals_prune_morphs` off both pieces keep every shape key.
+    """
+    scene_props = getattr(context.scene, "uma_scene", None)
+    if scene_props is not None and not scene_props.face_normals_split:
+        return None, "the separation is switched off, so the transfer is limited to a vertex group instead"
+    piece = split_face_into_object(context, face_obj, trace)
+    if piece is None:
+        return None, "the face could not be separated"
+    if scene_props is None or scene_props.face_normals_prune_morphs:
+        morphs = prune_split_morphs(face_obj, piece, trace)
+    else:
+        morphs = {"pruned": False}
+    return piece, morphs
 
 
 def apply_face_normals(context, objects=None, trace=None):
     """Run the whole step, idempotently. Returns a report dict."""
     report = {"tag": TAG, "targets": [], "notes": []}
     for face_obj, why in faces_in(context, objects):
+        entry = {"object": face_obj.name, "why": why}
+        if not is_whole_face(face_obj):
+            # Spork's shape: the face becomes its own object, so the transfer only ever touches the face's corners.
+            # Measured (+12.5 ms against +1.4 ms per evaluation) - see `split_face_into_object`.
+            piece, note = split_off_face(context, face_obj, trace)
+            entry["split"] = note if piece is None else {
+                "into": piece.name, "polygons": len(piece.data.polygons),
+                "vertices": len(piece.data.vertices),
+                "parent": getattr(piece.parent, "name", None),
+                "parent_type": piece.parent_type,
+                "collections": [collection.name for collection in piece.users_collection],
+                "vertex_groups": len(piece.vertex_groups),
+                "morphs": note,
+            }
+            if piece is None:
+                report["notes"].append("%s: %s" % (face_obj.name, note))
+            else:
+                face_obj = piece
+                entry["object"] = piece.name
         armature = armature_of(face_obj)
         head = head_bone(armature)
-        entry = {"object": face_obj.name, "why": why,
-                 "armature": armature.name if armature else None,
-                 "head": head.name if head else None}
+        entry["armature"] = armature.name if armature else None
+        entry["head"] = head.name if head else None
         if armature is None or head is None:
             entry["skipped"] = "no armature or no head bone to follow"
             report["notes"].append("%s: %s" % (face_obj.name, entry["skipped"]))
             report["targets"].append(entry)
             continue
         # is the face the whole object, or one material among several?
-        slots = [slot.material for slot in face_obj.material_slots if slot.material]
-        whole_object = ("face" in face_obj.name.lower() or "mayu" in face_obj.name.lower()
-                        or len([m for m in slots if is_face_material(m)]) == len(slots))
+        whole_object = is_whole_face(face_obj)
         group = None if whole_object else face_group_for(face_obj)
         if not whole_object and group is None:
             entry["skipped"] = "no face material found on it"
@@ -419,6 +671,11 @@ class FaceNormalsRemove(Operator):
             if group is not None and mesh_obj.modifiers.get(MODIFIER_NAME) is None:
                 mesh_obj.vertex_groups.remove(group)
                 removed["groups"] += 1
-        self.report({'INFO'}, "%s: removed %d transfer(s), %d copy/copies, %d group(s)"
-                    % (TAG, removed["modifiers"], removed["copies"], removed["groups"]))
+        # A separated face is **left** where it is. Joining it back would silently change what the user's export
+        # sees, and it is one keystroke away - so it is reported rather than done.
+        split = [obj.name for obj in bpy.data.objects if obj.get(SPLIT_MARKER)]
+        note = ("; %d face object(s) the step separated are left in place (%s) - select the body and the face and "
+                "press Ctrl+J to make one mesh again" % (len(split), ", ".join(split[:3]))) if split else ""
+        self.report({'INFO'}, "%s: removed %d transfer(s), %d copy/copies, %d group(s)%s"
+                    % (TAG, removed["modifiers"], removed["copies"], removed["groups"], note))
         return {'FINISHED'}

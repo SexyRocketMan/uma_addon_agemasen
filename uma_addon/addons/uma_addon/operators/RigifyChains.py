@@ -83,9 +83,18 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-53"
+BUILD_TAG = "chains-54"
 BUILD = BUILD_TAG + (
-    ": 2.13.1 - the Physics & Action panel stops writing scene properties while it draws (Blender "
+    ": 2.14.0 - the face-normal step separates the face into its own object before the transfer, "
+    "which is the shape Spork's own file has and the fix for the reported cost: +1.4 ms per "
+    "evaluation on a separated face against +12.5 ms on the whole 12,450-vertex mesh, where limiting "
+    "the transfer with a vertex group (which stays as the fallback) saved 0.9 ms of that. Bit-exact "
+    "under a 30 degree head turn, a 15 degree rig turn and a rig move - rest, deformation and "
+    "return-to-rest all 0.00e+00 m - and the separated piece keeps the parent, collections, slots, "
+    "vertex groups and armature modifier, so the hierarchy and the seam are untouched. Both pieces "
+    "also drop the shape keys that cannot move them, which is the reported 'two sets of identical "
+    "morphs in the viewer': 118 keys off the body, 36 off the face, no name lost. Before that: "
+    "2.13.1 - the Physics & Action panel stops writing scene properties while it draws (Blender "
     "5.x refuses ID writes in a draw: \"Writing to ID classes in this context is not allowed\", which "
     "is why the action list never arrived, and the fill is a one-shot timer now), the heart button is "
     "disabled through its row instead of by assigning `.enabled` to the object `layout.operator()` "
