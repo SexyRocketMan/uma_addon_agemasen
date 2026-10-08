@@ -83,9 +83,17 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-54"
+BUILD_TAG = "chains-55"
 BUILD = BUILD_TAG + (
-    ": 2.14.0 - the face-normal step separates the face into its own object before the transfer, "
+    ": 2.15.0 - a family choice made in the setup now beats a pinned family. `fixed_families` "
+    "('the ears are always a chain') used to discard it outright, which is how setting every "
+    "family to `basic.super_copy` silently left the ears as a chain - the reported mixed result, "
+    "where some bones answer and some do not. With nothing asked for, the pin still decides (proved "
+    "in supercopy_precedence_check.py, case A), and an override is named in the trace instead of "
+    "being silent. Nothing else changed: a `super_copy` family already types every bone it governs, "
+    "one control each (RigifyChains.py:2201-2206), so the per-bone controls the plan needs were "
+    "already there - measured 16 of 16 controls moving their own ORG and every control with bones "
+    "below it moving them 30.0 degrees. Before that: 2.14.0 - the face-normal step separates the face into its own object before the transfer, "
     "which is the shape Spork's own file has and the fix for the reported cost: +1.4 ms per "
     "evaluation on a separated face against +12.5 ms on the whole 12,450-vertex mesh, where limiting "
     "the transfer with a vertex group (which stays as the fallback) saved 0.9 ms of that. Bit-exact "
@@ -978,11 +986,28 @@ def resolve_rule_modes(model, rules, family_modes, table_modes, fixed, never, tr
                                unit["pattern"]))
             continue
         # a fixed family: his rigs never vary it (241 of 241), so no mode can change it - the ears are always a
-        # basic_tail chain and the tail always a spline
+        # basic_tail chain and the tail always a spline. **Unless the setup asks for something else**: the pin was
+        # absolute, which is how "set every family to `basic.super_copy`" silently left the ears as a chain - the
+        # user's own report, and the one place where a choice made in the dialog could not take effect. The pin is
+        # still the default (nothing asked for means his answer), and an override is reported rather than silent.
         fixed_here = [family for family in families_here if family in fixed]
         if fixed_here:
             rig_type, source = fixed[fixed_here[0]], "fixed"
             mode = None
+            for family in fixed_here:
+                chosen = family_modes.get(family)
+                # compared as a *type*: the setup's answer is a mode (`STUB`, `TAIL`, ...) and the pin is a rig
+                # type, so comparing them directly made every answer look like a change - asking for the pinned
+                # type itself was reported as an override, which is exactly the kind of line that makes a trace
+                # untrustworthy
+                chosen_type = MODE_TYPES.get(chosen, chosen)
+                if chosen is not None and chosen != table_modes.get(family) and chosen_type != rig_type:
+                    mode = chosen
+                    rig_type = chosen_type
+                    source = "fixed (%s), overridden by the setup" % fixed[family]
+                    trace.info("family %-22s is pinned to %s, but the setup asks for %s - using %s"
+                               % (family, fixed[family], chosen, rig_type))
+                    break
         else:
             # A unit holds the families one table rule decides. The family's field counts as a *choice* only when
             # it differs from what the table alone would say - so a family the table splits keeps both of its
