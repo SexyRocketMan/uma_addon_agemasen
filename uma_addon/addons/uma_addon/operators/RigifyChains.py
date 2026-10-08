@@ -1420,6 +1420,43 @@ def find_model_armature(context, trace=None):
     return None, []
 
 
+def adopt_rig_into_model(model, rig, trace=None):
+    """Put the generated rig inside the model's own object hierarchy, so moving the character moves the rig too.
+
+    The reported fault: *"after running pumpkin rig, I had to move the uma using the armature object - if i used the
+    root empty, the mesh would get stretched between the empty and the armature."* Reproduced and measured
+    (`rigify_chains_parenting_check.py`): mmd_tools imports a model as `root empty -> armature -> mesh`, and the
+    generated rig was parented to **nothing**, so moving the empty moved `1004_00 -> 1004_00_arm -> 1004_00_mesh`
+    while `RIG-1004_00_arm` stayed where it was. The model's chain bones are all constrained to follow that rig's
+    bones, so the chain-driven parts of the mesh stayed behind with it: a 0.5 m translation plus a 20 degree turn
+    stretched the mesh by up to **0.608 m** at its far corner.
+
+    The rig therefore becomes a child of the model's armature with its world transform preserved through
+    `matrix_parent_inverse` (set from the armature's world matrix, and the world matrix written back afterwards so
+    nothing jumps). The character is one tree again: the empty moves the armature, and the armature moves the rig.
+
+    This direction cannot be a dependency cycle: the armature's *bones* are constrained to the rig's bones, while
+    what the rig's transform depends on is the armature's *object* transform, which does not depend on the pose.
+    """
+    if rig is None or model is None:
+        return None
+    if rig.parent is not None:
+        if trace is not None:
+            trace.info("the generated rig %r is already a child of %r, so its place in the hierarchy is left alone"
+                       % (rig.name, rig.parent.name))
+        return rig.parent
+    world = rig.matrix_world.copy()
+    rig.parent = model
+    rig.parent_type = 'OBJECT'
+    rig.matrix_parent_inverse = model.matrix_world.inverted()
+    rig.matrix_world = world
+    if trace is not None:
+        trace.info("the generated rig %r is now a child of the model armature %r, so moving the character by its "
+                   "root empty moves the rig with it (without this the rig stayed behind and the mesh stretched: "
+                   "measured 0.608 m on a 0.5 m move with a 20 degree turn)" % (rig.name, model.name))
+    return model
+
+
 def sync_preset(self, context):
     """Fill the family rows from `Preset`, if they have not already been filled from it.
 
@@ -3979,6 +4016,8 @@ class RigifyChains(bpy.types.Operator):
                         % (BUILD_TAG, TRACE_TEXT_NAME))
             return {'CANCELLED'}
         trace.check("generated rig found", True, "%s (%d bones)" % (rig.name, len(rig.data.bones)))
+        # ...and it goes inside the model's hierarchy, or moving the character by its root empty leaves it behind
+        adopt_rig_into_model(model, rig, trace)
 
         orgs = [names[0] for _rule, names in chains if ("ORG-" + names[0]) in rig.pose.bones]
         trace.check("chains were generated", len(orgs) == len(chains),
