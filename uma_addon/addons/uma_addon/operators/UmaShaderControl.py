@@ -60,8 +60,9 @@ from . import ShaderManifest
 
 #: The tag reported by the operators and printed when drivers are hooked up, so a report can be told apart from
 #: one produced by a stale copy of this file (the same convention RigifyChains uses with its build tag). `look-2`
-#: stopped this file owning the settings table; `look-3` made the table follow the shader the *scene* chooses.
-TAG = "look-3"
+#: stopped this file owning the settings table, `look-3` made the table follow the shader the *scene* chooses, and
+#: `look-4` made each material copy remember its own shader, so a scene can wear two at once.
+TAG = "look-4"
 
 # --- the shader's own names, from its manifest ----------------------------------------------------------
 #
@@ -136,7 +137,7 @@ def table_for(manifest):
     }
 
 
-def use_table(context=None):
+def use_table(context=None, manifest=None):
     """Point every name above at one shader's table, and return `(manifest, problems)`.
 
     The names are module globals because about twenty functions read them, and a scene can choose its shader, so
@@ -146,11 +147,19 @@ def use_table(context=None):
     scene chose) and the operators that call them. A stale table would be silent rather than loud, which is why the
     id is kept in `TABLE_ID`, reported by `describe()`, and written onto the sun by `hook()` so the panel can say
     when the drivers in a file were made for a different shader than the one now selected.
+
+    `manifest` points the table at one shader explicitly instead of asking the scene, which is what a *material
+    copy* needs: every copy remembers the shader it was made from, so `hook`, `verify` and `bake` switch the table
+    per copy - one scene can wear two shaders, each with its own table and its own host empty.
     """
     global MANIFEST, MANIFEST_PROBLEMS, TABLE_ID
     global SETTINGS, SETTING_BY_KEY, SETTING_BY_INPUT, KEYS, SECTION_ORDER, NUMERIC_KEYS, COLOUR_KEYS
     global SUN_NAME, GROUP_HINTS, LIBRARY_MATERIALS, LIBRARY_COLLECTION_HINT
-    MANIFEST, MANIFEST_PROBLEMS = ShaderManifest.active(context)
+    if manifest is None:
+        MANIFEST, MANIFEST_PROBLEMS = ShaderManifest.active(context)
+    else:
+        MANIFEST = manifest
+        MANIFEST_PROBLEMS = ShaderManifest.load((manifest or {}).get("id"))[1]
     table = table_for(MANIFEST)
     TABLE_ID = table["id"]
     SETTINGS = table["settings"]
@@ -184,35 +193,30 @@ def section_keys(section):
 
 # --- what is in the scene ------------------------------------------------------------------------------
 
-def library_collection(context=None):
-    """The library collection of the shader this scene is set to, when the scene holds it.
+def library_collection(context=None, shader_id=None):
+    """The library collection of one shader, when the scene holds it.
 
     Both shader files name their collection the same ("Icosphere of Materials Collection"), so a scene that shaded
-    with one shader and then with another holds two of them, each with its own sphere and its own `Uma Sun`. The
-    tag `Shading` writes with the append (`ShaderManifest.SOURCE_PROPERTY`) is what tells them apart; a collection
-    with no tag is from a build before that property existed, which could only have been the default shader's.
+    with one shader and then with another holds two of them, each with its own sphere and its own `Uma Sun`. The tag
+    `Shading` writes with the append (`ShaderManifest.SOURCE_PROPERTY`) is what tells them apart; a collection with
+    no tag is from a build before that property existed, which could only have been the default shader's. `shader_id`
+    defaults to the shader the table is currently pointed at.
     """
-    hint = LIBRARY_COLLECTION_HINT
-    if not hint:
-        return None
-    wanted = TABLE_ID or ShaderManifest.DEFAULT_ID
+    hint = LIBRARY_COLLECTION_HINT or "Icosphere"
+    wanted = shader_id or TABLE_ID or ShaderManifest.DEFAULT_ID
     for collection in bpy.data.collections:
         if hint in collection.name and collection.get(ShaderManifest.SOURCE_PROPERTY) == wanted:
             return collection
-    return next((collection for collection in bpy.data.collections if hint in collection.name), None)
+    if wanted == TABLE_ID or shader_id is None:
+        return next((collection for collection in bpy.data.collections if hint in collection.name), None)
+    return None
 
 
-def sun_object(context=None):
-    """The empty the global settings live on: the shader library's own sun, or None if shading has not run.
+def _find_sun(collection=None):
+    """The sun empty, from a given collection first, then by name, then by prefix.
 
-    Asking for the sun is asking *which shader this scene is set to* - each library brings its own - so this is also
-    where the table is pointed at that shader's manifest (`use_table`), which makes the panel, the hook-up and the
-    verification all agree with the scene's choice. The sun is looked for inside the selected shader's collection
-    first, then by name, then by prefix: the name carries a suffix a user could have edited, and a renamed object
-    is still the sun.
+    The name carries a suffix a user could have edited, and a renamed object is still the sun.
     """
-    use_table(context)
-    collection = library_collection(context)
     if collection is not None:
         sun = next((obj for obj in collection.all_objects
                     if obj.type == 'EMPTY' and obj.name.startswith("Uma Sun")), None)
@@ -223,6 +227,104 @@ def sun_object(context=None):
         sun = next((obj for obj in bpy.data.objects
                     if obj.type == 'EMPTY' and obj.name.startswith("Uma Sun")), None)
     return sun
+
+
+def sun_object(context=None):
+    """The empty the global settings live on: the shader library's own sun, or None if shading has not run.
+
+    Asking for the sun is asking *which shader this scene is set to* - each library brings its own - so this is also
+    where the table is pointed at that shader's manifest (`use_table`), which makes the panel, the hook-up and the
+    verification all agree with the scene's choice. A *character* can wear a different shader from the scene's
+    choice, and then her driver reads *her* shader's sun instead: see `shader_host` and `shader_of`.
+    """
+    use_table(context)
+    return _find_sun(library_collection(context))
+
+
+def master_material(manifest, role, context=None):
+    """One shader's own master material from its library collection, or None when that library is not in the scene.
+
+    The sphere the library collection carries holds them as slots, and a second library's arrive renamed
+    (`Uma Shader.001`), so the match allows Blender's numeric suffix.
+    """
+    collection = library_collection(context, (manifest or {}).get("id"))
+    name = ((manifest or {}).get("materials") or {}).get(role)
+    if collection is None or not name:
+        return None
+    for obj in collection.all_objects:
+        for slot in obj.material_slots:
+            material = slot.material
+            if material is not None and (material.name == name or material.name.startswith(name + ".")):
+                return material
+    return None
+
+
+def _group_tree(material):
+    """The shader group a material drives, as the node group datablock itself - one per library."""
+    tree = getattr(material, "node_tree", None)
+    if tree is None:
+        return None
+    node = next((entry for entry in tree.nodes
+                 if entry.bl_idname == "ShaderNodeGroup" and entry.node_tree is not None), None)
+    return node.node_tree if node is not None else None
+
+
+def shader_of(material, context=None):
+    """Which shader a material copy was made from - so a character can wear a different one from the scene's choice.
+
+    Two ways of knowing, in order. The tag `Shading` writes onto every copy is the direct answer. A copy made before
+    that tag existed has none, and is matched by the *node group datablock* it drives: node groups are shared, not
+    copied, so a material copied from one library still points at that library's own `Uma Shader` group, which is
+    what `master_material` looks up per shader. With neither answer, the scene's own choice stands - which is what
+    the control did before a material could be asked at all.
+    """
+    if material is None:
+        return MANIFEST
+    shaders = ShaderManifest.available()
+    source = material.get(ShaderManifest.SOURCE_PROPERTY)
+    if source and source in shaders:
+        return shaders[source]
+    tree = _group_tree(material)
+    if tree is not None:
+        for manifest in shaders.values():
+            master = master_material(manifest, "default", context)
+            if master is not None and _group_tree(master) is tree:
+                return manifest
+    return MANIFEST
+
+
+def shader_host(context, manifest):
+    """The empty one shader's *global* values live on: the sun inside that shader's own library collection.
+
+    Every library brings one, and a driver variable can only read an Object, so the sun is where a shader's global
+    values have to live. With one shader in a scene this is the sun `sun_object()` finds; with two it is what keeps
+    their values apart - a 0.2.4-shaded character and a 0.2.6-shaded one can then hold different values for the same
+    setting, which is impossible when everything is driven from the selected shader's sun.
+    """
+    host = _find_sun(library_collection(context, (manifest or {}).get("id")))
+    return host if host is not None else _find_sun()
+
+
+def shaders_in_use(context, materials=None):
+    """`{shader id: manifest}` for the shaders the scene's material copies were actually made from, in order.
+
+    The scene's own choice first, then the rest by id, which is the order the panel draws its blocks in. Built from
+    the copies rather than from the folder, so a shader nobody is wearing takes no panel space (the user's choice),
+    and a copy from an older build still resolves through `shader_of`'s fallback.
+    """
+    if materials is None:
+        materials = []
+        for _root, _objects, copies in all_characters(context):
+            materials.extend(copies)
+    found = {}
+    for material in materials:
+        manifest = shader_of(material, context)
+        found[(manifest or {}).get("id") or ""] = manifest
+    chosen = (MANIFEST or {}).get("id") or ""
+    order = ([chosen] if chosen in found else []) + sorted(key for key in found if key != chosen)
+    if not order:
+        order = [chosen]
+    return {key: found.get(key, MANIFEST) for key in order}
 
 
 def root_object(obj):
@@ -344,14 +446,21 @@ def panel_character(context):
     return None, []
 
 
-def resolve_values(context, root=None):
-    """What every setting currently comes out as: the global value, or `root`'s override when it has one."""
-    use_table(context)
-    sun = sun_object(context)
+def resolve_values(context, root=None, host=None):
+    """What every setting currently comes out as: the global value, or `root`'s override when it has one.
+
+    Both are read off the *table's* settings, so with two shaders in a scene this is called once per shader with
+    that shader's `host` (its own sun) - the caller switches the table first (`use_table`), and `host` says where
+    that shader's globals live. Without a host it is the scene's own, which is what the panel's global block asks
+    for.
+    """
+    if host is None:
+        use_table(context)
+        host = sun_object(context)
     values = {}
     for setting in SETTINGS:
         key = setting["key"]
-        value = read_value(sun, key, setting) if sun is not None else None
+        value = read_value(host, key, setting) if host is not None else None
         if value is None:
             value = setting["default"]
         if root is not None:
@@ -496,18 +605,20 @@ def write_value(obj, key, value):
         obj[key] = float(value)
 
 
-def seed_global(context, materials):
-    """Give the sun its settings, seeded from what the file already shows so nothing changes on hook-up.
+def seed_global(context, materials, host=None):
+    """Give one shader's host its settings, seeded from what the file already shows so hook-up changes nothing.
 
-    Only when they are missing: the global is one look for the scene, so a second character shaded into the same
-    file must not redefine it. A character that should differ gets overrides, not a second global.
+    Only when they are missing: the globals are one look *per shader*, so a second character shaded with the same
+    shader must not redefine them. A character that should differ gets overrides, not a second global. `host` is the
+    empty those globals live on - that shader's own sun - and the caller has already pointed the table at that
+    shader's manifest.
     """
-    sun = sun_object(context)
-    if sun is None:
+    host = host if host is not None else sun_object(context)
+    if host is None:
         return None, []
-    missing = [key for key in KEYS if key not in sun.keys()]
+    missing = [key for key in KEYS if key not in host.keys()]
     if not missing:
-        return sun, []
+        return host, []
     seed = {}
     source = next((material for material in sorted(materials, key=lambda item: item.name)
                    if shader_nodes(material)), None)
@@ -523,8 +634,8 @@ def seed_global(context, materials):
                     else:
                         seed[key] = float(socket.default_value)
                     break
-    created = ensure_properties(sun, missing, seed or None)
-    return sun, created
+    created = ensure_properties(host, missing, seed or None)
+    return host, created
 
 
 # --- the drivers ---------------------------------------------------------------------------------------
@@ -585,21 +696,23 @@ def _add_driver(tree, path, index, expression, targets):
 def hook(context, roots=None, materials=None):
     """Put the drivers on every copy of every character, resolving override -> global.
 
-    Returns a report dictionary: how many drivers were made, per character, and anything that had to be said -
-    a material shared by two characters, a copy whose shader group lacks a setting, or a driver that did not take.
+    **Per shader**: each copy remembers which shader it was made from (`shader_of`), so it is driven from *its own*
+    shader's settings table and from *its own* shader's sun (`shader_host`) rather than from the scene's choice. That
+    is what lets a 0.2.6-shaded character and a shader-B-shaded one sit in the same scene with different values for
+    the same key - and it is why the table (`use_table`) is switched inside the material loop.
+
+    Returns a report dictionary: how many drivers were made, per character and per shader, and anything that had to
+    be said - a material shared by two characters, a copy whose shader group lacks a setting, or a driver that did
+    not take.
     """
-    use_table(context)                      # the scene's shader decides the table, so read it here
-    sun = sun_object(context)
-    report = {"tag": TAG, "drivers": 0, "copies": 0, "characters": [], "notes": [], "verified": None}
-    if sun is None:
+    use_table(context)
+    report = {"tag": TAG, "drivers": 0, "copies": 0, "characters": [], "notes": [], "verified": None, "shaders": {}}
+    if sun_object(context) is None:
         report["notes"].append("no '%s' empty in the scene, so Shading has not run here" % SUN_NAME)
         return report
     if MANIFEST is None:
         report["notes"].append("no readable shader manifest (%s), so there are no settings to drive"
                                % "; ".join(MANIFEST_PROBLEMS))
-    elif not SETTINGS:
-        report["notes"].append("%s has no settings table, so there is nothing to drive"
-                               % (MANIFEST.get("name") or MANIFEST.get("id")))
 
     if roots is None or materials is None:
         characters = all_characters(context)
@@ -612,15 +725,50 @@ def hook(context, roots=None, materials=None):
     every_material = []
     for root, _objects, copies in characters:
         every_material.extend(copies)
-    seed_global(context, every_material)
+
+    # one host per shader actually worn in this scene, and the tables those hosts belong to
+    hosts = {}
+    for manifest in shaders_in_use(context, every_material).values():
+        use_table(context, manifest=manifest)
+        if not SETTINGS:
+            report["notes"].append("%s has no settings table, so there is nothing to drive"
+                                   % ((manifest or {}).get("name") or (manifest or {}).get("id")))
+            continue
+        host = shader_host(context, manifest)
+        if host is None:
+            report["notes"].append("%s: no sun empty in the scene for it, so its settings have no home"
+                                   % ((manifest or {}).get("name") or (manifest or {}).get("id")))
+            continue
+        hosts[(manifest or {}).get("id")] = host
+
+    # her overrides, one set of keys per shader she wears; and each shader's globals seeded from the copies that
+    # already show a value, so hooking up changes nothing on screen
     for root, _objects, copies in characters:
-        ensure_properties(root, KEYS, inherit=True)
-        moved = reorder_properties(root)
-        if moved:
-            report["notes"].append("%s's settings were moved into the shader's own order" % root.name)
-    sun_moved = reorder_properties(sun)
-    if sun_moved:
-        report["notes"].append("the sun's settings were moved into the shader's own order")
+        for material in copies:
+            manifest = shader_of(material, context)
+            host = hosts.get((manifest or {}).get("id"))
+            if host is None:
+                continue
+            use_table(context, manifest=manifest)
+            ensure_properties(root, KEYS, inherit=True)
+            seed_global(context, [material], host=host)
+
+    # the property *order* Blender's own list shows: per host for its own table, and once per root over the union of
+    # the keys she wears (calling `reorder_properties` per shader would move each shader's keys into their own order
+    # and undo the previous shader's arrangement)
+    for manifest in shaders_in_use(context, every_material).values():
+        use_table(context, manifest=manifest)
+        host = hosts.get((manifest or {}).get("id"))
+        if host is not None and reorder_properties(host):
+            report["notes"].append("%s's settings were moved into %s's order"
+                                   % (host.name, TABLE_ID))
+    union = []
+    for manifest in shaders_in_use(context, every_material).values():
+        use_table(context, manifest=manifest)
+        union.extend(key for key in KEYS if key not in union)
+    for root, _objects, _copies in characters:
+        if reorder_properties(root, keys=tuple(union)):
+            report["notes"].append("%s's overrides were moved into the shaders' own order" % root.name)
 
     # a material used by two characters can only follow one of them
     users = {}
@@ -633,8 +781,17 @@ def hook(context, roots=None, materials=None):
                                    "overrides" % (name, ", ".join(sorted(set(owners)))))
 
     for root, _objects, copies in characters:
-        entry = {"root": root.name, "materials": len(copies), "drivers": 0, "missing": []}
+        entry = {"root": root.name, "materials": len(copies), "drivers": 0, "missing": [], "shaders": []}
         for material in copies:
+            manifest = shader_of(material, context)
+            use_table(context, manifest=manifest)          # this copy's own table, and nothing else's
+            host = hosts.get(TABLE_ID)
+            if host is None:
+                entry["missing"].append("%s / every setting (no host)" % material.name)
+                continue
+            if TABLE_ID not in entry["shaders"]:
+                entry["shaders"].append(TABLE_ID)
+            report["shaders"][TABLE_ID] = report["shaders"].get(TABLE_ID, 0)
             tree = material.node_tree
             unhook([material])          # idempotent: hooking twice leaves one driver per setting, not two
             for node in shader_nodes(material):
@@ -642,10 +799,10 @@ def hook(context, roots=None, materials=None):
                     key = setting["key"]
                     indices = _sockets_for(node, setting)
                     if not indices:
-                        entry["missing"].append("%s / %s" % (material.name, setting["input"]))
+                        entry["missing"].append("%s / %s (%s)" % (material.name, setting["input"], TABLE_ID))
                         continue
                     path = 'nodes["%s"].inputs[%d].default_value'
-                    targets = [("local", root, '["%s"]' % key), ("glob", sun, '["%s"]' % key)]
+                    targets = [("local", root, '["%s"]' % key), ("glob", host, '["%s"]' % key)]
                     expression = "local if local >= 0 else glob"
                     for index in indices:
                         if setting["kind"] == "colour":
@@ -656,19 +813,19 @@ def hook(context, roots=None, materials=None):
                                 curves = _add_driver(tree, path % (node.name, index), component, expression,
                                                      targets_with_component)
                                 entry["drivers"] += len(curves)
+                                report["shaders"][TABLE_ID] = report["shaders"].get(TABLE_ID, 0) + len(curves)
                         else:
                             curves = _add_driver(tree, path % (node.name, index), -1, expression, targets)
                             entry["drivers"] += len(curves)
+                            report["shaders"][TABLE_ID] = report["shaders"].get(TABLE_ID, 0) + len(curves)
+            # which shader made the settings on this host, so the panel can say when they belong to another one
+            try:
+                host[ShaderManifest.SOURCE_PROPERTY] = TABLE_ID
+            except (TypeError, AttributeError):
+                pass
             report["copies"] += 1
         report["characters"].append(entry)
         report["drivers"] += entry["drivers"]
-
-    # Which shader made these settings, so the panel can say when a file's drivers are for a shader other than the
-    # one now selected - the state a scene is in between choosing another shader and pressing Hook up.
-    try:
-        sun[ShaderManifest.SOURCE_PROPERTY] = TABLE_ID
-    except (TypeError, AttributeError):
-        pass
 
     report["verified"] = verify(context, characters)
     report["shader"] = TABLE_ID
@@ -707,22 +864,37 @@ def verify(context, characters=None, settle=True):
     A driver that fails to evaluate leaves the socket at whatever it was, which looks like "the control is
     ignoring me" rather than an error - so this reads the value back and compares it with the resolved one.
 
-    Resolved **per character**: a character with an override is supposed to differ from the global, and comparing
-    every character's copies against the global reported seven failures on a two-character file whose control was
-    doing exactly what it had been asked to do.
+    Resolved **per character and per shader**: a character with an override is supposed to differ from the global,
+    and comparing every character's copies against the global reported seven failures on a two-character file whose
+    control was doing exactly what it had been asked to do. A copy wearing a second shader is compared against
+    *that* shader's table and *that* shader's sun, which is the point of `shader_of` - checking it against the
+    scene's choice would report every one of its values as wrong.
     """
     use_table(context)
     if characters is None:
         characters = all_characters(context)
-    sun = sun_object(context)
+
+    every_material = []
+    for _root, _objects, copies in characters:
+        every_material.extend(copies)
+    hosts = {}
+    for manifest in shaders_in_use(context, every_material).values():
+        use_table(context, manifest=manifest)
+        host = shader_host(context, manifest)
+        hosts[(manifest or {}).get("id")] = host
+    use_table(context)
     if settle:
-        _settle(context, sun, *[root for root, _objects, _copies in characters])
-    global_values = resolve_values(context)
+        _settle(context, *[host for host in hosts.values() if host is not None],
+                *[root for root, _objects, _copies in characters])
+
     wrong = []
     checked = 0
     for root, _objects, copies in characters:
-        resolved = resolve_values(context, root) if root is not None else global_values
         for material in copies:
+            manifest = shader_of(material, context)
+            use_table(context, manifest=manifest)
+            host = hosts.get(TABLE_ID)
+            resolved = resolve_values(context, root, host=host)
             for node in shader_nodes(material):
                 for setting in SETTINGS:
                     key = setting["key"]
@@ -734,11 +906,13 @@ def verify(context, characters=None, settle=True):
                             actual = tuple(float(component) for component in socket.default_value)
                             if any(abs(a - b) > 1e-4 for a, b in zip(actual, expected)):
                                 wrong.append({"material": material.name, "setting": setting["input"],
+                                              "shader": TABLE_ID,
                                               "expected": list(expected), "actual": list(actual)})
                         else:
                             actual = float(socket.default_value)
                             if abs(actual - float(expected)) > 1e-4:
                                 wrong.append({"material": material.name, "setting": setting["input"],
+                                              "shader": TABLE_ID,
                                               "expected": expected, "actual": actual})
     return {"checked": checked, "wrong": wrong[:20], "wrong_count": len(wrong)}
 
@@ -751,7 +925,7 @@ def bake(context, roots=None):
 
     Each character is written with *its own* resolved values, overrides included - baking the global into a
     character that had an override would quietly throw that character's look away, which is the one thing a bake
-    must not do.
+    must not do - and each copy with *its own* shader's values, for the same reason.
     """
     use_table(context)
     if roots is None:
@@ -760,13 +934,22 @@ def bake(context, roots=None):
         characters = [(root, [], character_materials([obj for obj in context.scene.objects
                                                       if root_object(obj) is root and obj.type == 'MESH']))
                       for root in roots]
-    global_values = resolve_values(context)
+    every_material = []
+    for _root, _objects, copies in characters:
+        every_material.extend(copies)
+    hosts = {}
+    for manifest in shaders_in_use(context, every_material).values():
+        use_table(context, manifest=manifest)
+        hosts[(manifest or {}).get("id")] = shader_host(context, manifest)
     written = 0
     materials = []
     for root, _objects, copies in characters:
-        resolved = resolve_values(context, root) if root is not None else global_values
         materials.extend(copies)
         for material in copies:
+            manifest = shader_of(material, context)
+            use_table(context, manifest=manifest)               # her copy's own shader, not the scene's choice
+            host = hosts.get(TABLE_ID)
+            resolved = resolve_values(context, root, host=host)
             for node in shader_nodes(material):
                 for setting in SETTINGS:
                     for index in _sockets_for(node, setting):
@@ -782,7 +965,12 @@ def bake(context, roots=None):
 
 
 def status(context):
-    """Which mode the selected character is in: `driven`, `baked`, or `none` when no shader copy has drivers."""
+    """Which mode the selected character is in: `driven`, `baked`, or `none` when no shader copy has drivers.
+
+    Counted per copy with *its own* shader's table (`use_table` inside the loop), since what counts as this
+    control's driver is the set of socket names that shader has - a copy wearing another shader would otherwise
+    look undriven, or would have its other drivers counted as ours.
+    """
     use_table(context)
     _root, objects = character_objects(context)
     materials = character_materials(objects)
@@ -790,11 +978,13 @@ def status(context):
         return "none", 0
     driven = 0
     for material in materials:
+        use_table(context, manifest=shader_of(material, context))
         tree = material.node_tree
         if tree is None or tree.animation_data is None:
             continue
         owned = _own_driver_paths(material)
         driven += len([curve for curve in tree.animation_data.drivers if curve.data_path in owned])
+    use_table(context)
     if driven:
         return "driven", driven
     return "baked", 0
@@ -926,12 +1116,16 @@ class ShaderControlOverride(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     key: StringProperty(name="Setting")
+    #: The shader of the block the button was drawn in - the padlock exists once per shader's block, and it has to
+    #: act on *that* shader's settings and *that* shader's host empty (see `operator_table`).
+    shader: StringProperty(name="Shader")
 
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
 
     def execute(self, context):
+        _manifest, host = operator_table(context, self.shader)
         setting = SETTING_BY_KEY.get(self.key)
         if setting is None:
             self.report({'ERROR'}, "Unknown shading setting %r" % self.key)
@@ -944,13 +1138,13 @@ class ShaderControlOverride(Operator):
         current = read_value(root, self.key, setting)
         if is_inheriting(current, setting):
             # start the override from what the character shows now, so switching it on changes nothing
-            global_value = read_value(sun_object(context), self.key, setting) or setting["default"]
+            global_value = read_value(host, self.key, setting) or setting["default"]
             write_value(root, self.key, global_value)
             self.report({'INFO'}, "%s now overrides %s (at %s)" % (root.name, setting["input"], global_value))
         else:
             write_value(root, self.key, INHERIT if setting["kind"] == "number" else (INHERIT,) * 4)
             self.report({'INFO'}, "%s follows the global %s again" % (root.name, setting["input"]))
-        _settle(context, sun_object(context), root)
+        _settle(context, host, root)
         return {'FINISHED'}
 
 
@@ -967,14 +1161,15 @@ class ShaderControlOverrideAll(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     on: BoolProperty(name="Own values", default=True)
+    shader: StringProperty(name="Shader")
 
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
 
     def execute(self, context):
+        _manifest, sun = operator_table(context, self.shader)
         root, _objects = character_objects(context)
-        sun = sun_object(context)
         if root is None or sun is None:
             self.report({'ERROR'}, "Select a uma first (her root empty, mesh or armature)")
             return {'CANCELLED'}
@@ -1008,13 +1203,14 @@ class ShaderControlResetRow(Operator):
 
     key: StringProperty(name="Setting")
     local: BoolProperty(name="This uma", default=True)
+    shader: StringProperty(name="Shader")
 
     def execute(self, context):
+        _manifest, sun = operator_table(context, self.shader)
         setting = SETTING_BY_KEY.get(self.key)
         if setting is None:
             self.report({'ERROR'}, "Unknown shading setting %r" % self.key)
             return {'CANCELLED'}
-        sun = sun_object(context)
         if sun is None:
             self.report({'ERROR'}, "No uma shader in this scene yet")
             return {'CANCELLED'}
@@ -1044,13 +1240,14 @@ class ShaderControlResetSection(Operator):
 
     section: StringProperty(name="Group")
     local: BoolProperty(name="This uma", default=True)
+    shader: StringProperty(name="Shader")
 
     def execute(self, context):
+        _manifest, sun = operator_table(context, self.shader)
         keys = section_keys(self.section)
         if not keys:
             self.report({'ERROR'}, "Unknown shading group %r" % self.section)
             return {'CANCELLED'}
-        sun = sun_object(context)
         if sun is None:
             self.report({'ERROR'}, "No uma shader in this scene yet")
             return {'CANCELLED'}
@@ -1082,16 +1279,22 @@ class ShaderControlSection(Operator):
 
     index: IntProperty(name="Group", default=0)
     all_uma: BoolProperty(name="All umas", default=True)
+    shader: StringProperty(name="Shader")
 
     def execute(self, context):
         scene_props = getattr(context.scene, "uma_scene", None)
         if scene_props is None:
             return {'CANCELLED'}
-        attribute = "shader_global_sections" if self.all_uma else "shader_uma_sections"
-        # a bitmask rather than a dozen booleans: the sections come from the settings table, so the number of them
-        # is not a constant this file should have to name twice
+        # An empty `shader` means "the scene's choice", which is what a script (or the panel of a build before the
+        # per-shader blocks) passes: without that fallback the toggle would store its bit under a shader that no
+        # block reads, and folding a group would silently do nothing.
+        shader_id = self.shader or TABLE_ID
+        # a bitmask *per shader* rather than a dozen booleans: the sections come from the settings table, so the
+        # number of them is not a constant this file should have to name twice, and two shaders' blocks fold
+        # independently (`_set_section_mask`)
         bit = 1 << max(0, min(int(self.index), 30))
-        setattr(scene_props, attribute, int(getattr(scene_props, attribute, 0)) ^ bit)
+        mask = _section_mask(scene_props, shader_id, self.all_uma) ^ bit
+        _set_section_mask(scene_props, shader_id, self.all_uma, mask)
         return {'FINISHED'}
 
 
@@ -1129,18 +1332,19 @@ def _differs(value, reference, setting):
     return abs(float(value) - float(reference)) > 1e-6
 
 
-def _draw_global_row(layout, sun, key):
+def _draw_global_row(layout, host, key, shader_id=""):
     """One global row: the setting's own name, its value, and a reset once it is no longer the shader's default."""
     setting = SETTING_BY_KEY[key]
     row = layout.row(align=True)
-    row.prop(sun, '["%s"]' % key, text=setting["input"], slider=setting["kind"] == "number")
-    if _differs(read_value(sun, key, setting), setting["default"], setting):
+    row.prop(host, '["%s"]' % key, text=setting["input"], slider=setting["kind"] == "number")
+    if _differs(read_value(host, key, setting), setting["default"], setting):
         reset = row.operator(ShaderControlResetRow.bl_idname, text="", icon='LOOP_BACK')
         reset.key = key
         reset.local = False
+        reset.shader = shader_id
 
 
-def _draw_override_row(layout, root, sun, key):
+def _draw_override_row(layout, root, host, key, shader_id=""):
     """One row for the character: the follow/override padlock, the name, the value or `global`, and a reset.
 
     The reset appears only when an override differs from the global it replaced - "I moved this one and want it
@@ -1153,62 +1357,113 @@ def _draw_override_row(layout, root, sun, key):
     operator = row.operator(ShaderControlOverride.bl_idname, text="",
                             icon='LOCKED' if inheriting else 'UNLOCKED', emboss=False)
     operator.key = key
+    operator.shader = shader_id
     row.label(text=setting["input"])
     if inheriting:
         row.label(text="global")
         return
     row.prop(root, '["%s"]' % key, text="", slider=setting["kind"] == "number")
-    if _differs(value, read_value(sun, key, setting), setting):
+    if _differs(value, read_value(host, key, setting), setting):
         reset = row.operator(ShaderControlResetRow.bl_idname, text="", icon='LOOP_BACK')
         reset.key = key
         reset.local = True
+        reset.shader = shader_id
 
 
-def _draw_section_header(layout, scene_props, section, index, all_uma):
+def _section_mask(scene_props, shader_id, all_uma):
+    """The fold mask for one shader's blocks, or 0 when that shader has never been folded."""
+    for entry in getattr(scene_props, "shader_sections", []):
+        if entry.shader == (shader_id or ""):
+            return int(entry.global_mask if all_uma else entry.uma_mask)
+    return 0
+
+
+def _set_section_mask(scene_props, shader_id, all_uma, mask):
+    """Store one shader's fold mask, creating its entry the first time."""
+    entry = next((entry for entry in getattr(scene_props, "shader_sections", [])
+                  if entry.shader == (shader_id or "")), None)
+    if entry is None:
+        entry = scene_props.shader_sections.add()
+        entry.shader = shader_id or ""
+    if all_uma:
+        entry.global_mask = int(mask)
+    else:
+        entry.uma_mask = int(mask)
+
+
+def operator_table(context, shader_id=None):
+    """Point the table at the shader an operator acts on, and return `(manifest, host)`.
+
+    Every button the panel draws carries the shader of the block it was drawn in, because with two shaders in one
+    scene the same button exists twice and each has to act on its own shader's settings *and* its own host empty -
+    `sun_object()` would answer with the scene's choice, which is a different block.
+    """
+    manifest = None
+    if shader_id:
+        manifest, _problems = ShaderManifest.load(shader_id)
+    if manifest is None:
+        manifest, _problems = ShaderManifest.active(context)
+    use_table(context, manifest=manifest)
+    return manifest, shader_host(context, manifest)
+
+
+def _draw_section_header(layout, scene_props, section, index, all_uma, shader_id):
     """The group's header: the fold toggle, and a reset for the whole group. Returns whether it is folded."""
-    mask = int(getattr(scene_props, "shader_global_sections" if all_uma else "shader_uma_sections", 0))
+    mask = _section_mask(scene_props, shader_id, all_uma)
     collapsed = bool(mask & (1 << index))
     header = layout.row(align=True)
     toggle = header.operator(ShaderControlSection.bl_idname, text=section, emboss=False,
                              icon='TRIA_RIGHT' if collapsed else 'TRIA_DOWN')
     toggle.index = index
     toggle.all_uma = all_uma
+    toggle.shader = shader_id or ""
     reset = header.operator(ShaderControlResetSection.bl_idname, text="", icon='LOOP_BACK')
     reset.section = section
     reset.local = not all_uma
+    reset.shader = shader_id or ""
     return collapsed
 
 
-def _draw_global_block(layout, sun, scene_props):
-    """Every global value, grouped the way the shader groups them."""
+def _draw_global_block(layout, host, scene_props, manifest=None):
+    """Every global value of one shader, grouped the way that shader groups them."""
+    shader_id = (manifest or {}).get("id") or TABLE_ID
     for index, section in enumerate(SECTION_ORDER):
-        if _draw_section_header(layout, scene_props, section, index, True):
+        if _draw_section_header(layout, scene_props, section, index, True, shader_id):
             continue
         for key in section_keys(section):
-            _draw_global_row(layout, sun, key)
+            _draw_global_row(layout, host, key, shader_id)
 
 
-def _draw_local_block(layout, root, sun, scene_props):
-    """One character's own values: the master switch, then the same groups."""
+def _draw_local_block(layout, root, host, scene_props, manifest=None):
+    """One character's own values for one shader: the master switch, then the same groups."""
+    shader_id = (manifest or {}).get("id") or TABLE_ID
     overrides = override_count(root)
     row = layout.row(align=True)
     switch = row.operator(ShaderControlOverrideAll.bl_idname, text="This uma has her own values",
                           icon='CHECKBOX_HLT' if overrides else 'CHECKBOX_DEHLT', depress=bool(overrides))
     switch.on = not overrides
+    switch.shader = shader_id
     if overrides:
         row.label(text="%d of %d set" % (overrides, len(KEYS)))
     else:
         row.label(text="follows the global")
     for index, section in enumerate(SECTION_ORDER):
-        if _draw_section_header(layout, scene_props, section, index, False):
+        if _draw_section_header(layout, scene_props, section, index, False, shader_id):
             continue
         for key in section_keys(section):
-            _draw_override_row(layout, root, sun, key)
+            _draw_override_row(layout, root, host, key, shader_id)
 
 
 def draw_shading_control(layout, context):
-    """The panel: which shader the scene uses, the mode line and its two buttons, then the values."""
-    use_table(context)                      # the scene's shader chooses the table this panel draws from
+    """The panel: which shader the scene uses, the mode line and its two buttons, then the values.
+
+    The values are drawn **per shader**. With nothing selected, one box per shader a character in this scene is
+    actually wearing (`shaders_in_use`), each labelled with its own name, its own settings and its own host - so a
+    scene with two shaders gets two independently editable looks rather than one table with rows that do nothing.
+    With a character selected, only *her* shader, because a row she cannot use is worse than no row (the user's
+    choice, and the reason `shader_of` exists).
+    """
+    use_table(context)                      # the scene's shader: the chooser row and the mode line are about it
     sun = sun_object(context)
     scene_props = getattr(context.scene, "uma_scene", None)
     mode, drivers = status(context)
@@ -1238,39 +1493,66 @@ def draw_shading_control(layout, context):
     else:
         layout.label(text="No uma shader here yet: run Shading on a character", icon='INFO')
 
-    # The drivers in a file were made for one shader. Choosing another and not hooking up again is a real state -
-    # the shared settings keep working (they are resolved by name) and the new shader's own ones do nothing - so it
-    # is said out loud rather than left to be discovered.
-    made_for = sun.get(ShaderManifest.SOURCE_PROPERTY) if sun is not None else None
-    if made_for and made_for != TABLE_ID:
-        layout.label(text="The drivers here were made for %s - Hook up to move them to %s"
-                     % (made_for, TABLE_ID), icon='INFO')
-
     if sun is None or scene_props is None:
         return
-    ensure_properties(sun, KEYS)
-    reorder_properties(sun)
 
     # Which character the panel is showing: `panel_character` reads the *selection*, so deselecting everything
     # goes back to the global values even though Blender keeps an active object (the user's report).
     character, materials = panel_character(context)
-    if character is None:
+    in_use = shaders_in_use(context, materials if materials else None)
+
+    if character is not None and materials:
+        # her own copy decides which shader this block is about - not the scene's choice, which may be another one
+        manifest = shader_of(sorted(materials, key=lambda item: item.name)[0], context)
+        use_table(context, manifest=manifest)
+        host = shader_host(context, manifest)
         box = layout.box()
-        box.label(text="All umas in this scene", icon='WORLD')
-        _draw_global_block(box, sun, scene_props)
-        hint = layout.box()
-        # a better sentence than "select a uma" when the active object *is* a uma with no shader yet
-        active_root, active_objects = character_objects(context)
-        if active_root is not None and active_objects and not character_materials(active_objects):
-            hint.label(text="%s has no uma shader yet - run Shading on her" % active_root.name, icon='INFO')
-        else:
-            hint.label(text="Select a uma (her root empty, mesh or armature) for her own values", icon='INFO')
+        box.label(text="Shading for %s - %s" % (character.name, (manifest or {}).get("name") or TABLE_ID),
+                  icon='OBJECT_DATA')
+        if len(materials) != 1:
+            box.label(text="%d shader material(s) in this character" % len(materials))
+        if len(in_use) > 1:
+            box.label(text="She also wears %d other shader(s); select her other copy to set those"
+                      % (len(in_use) - 1), icon='INFO')
+        _draw_host_note(box, host, manifest)
+        if host is None:
+            box.label(text="No sun empty for %s in this scene" % TABLE_ID, icon='ERROR')
+            return
+        ensure_properties(host, KEYS)
+        ensure_properties(character, KEYS, inherit=True)
+        _draw_local_block(box, character, host, scene_props, manifest)
         return
 
-    box = layout.box()
-    box.label(text="Shading for %s" % character.name, icon='OBJECT_DATA')
-    ensure_properties(character, KEYS, inherit=True)
-    reorder_properties(character)
-    if len(materials) != 1:
-        box.label(text="%d shader material(s) in this character" % len(materials))
-    _draw_local_block(box, character, sun, scene_props)
+    drawn = 0
+    for shader_id, manifest in in_use.items():
+        use_table(context, manifest=manifest)
+        host = shader_host(context, manifest)
+        box = layout.box()
+        box.label(text="%s - %d setting(s)" % ((manifest or {}).get("name") or shader_id, len(SETTINGS)),
+                  icon='SHADING_RENDERED')
+        _draw_host_note(box, host, manifest)
+        if host is None or not SETTINGS:
+            continue
+        ensure_properties(host, KEYS)
+        _draw_global_block(box, host, scene_props, manifest)
+        drawn += 1
+
+    if not drawn:
+        box = layout.box()
+        box.label(text="No uma shader here yet: run Shading on a character", icon='INFO')
+    hint = layout.box()
+    # a better sentence than "select a uma" when the active object *is* a uma with no shader yet
+    active_root, active_objects = character_objects(context)
+    if active_root is not None and active_objects and not character_materials(active_objects):
+        hint.label(text="%s has no uma shader yet - run Shading on her" % active_root.name, icon='INFO')
+    else:
+        hint.label(text="Select a uma (her root empty, mesh or armature) for her own values", icon='INFO')
+
+
+def _draw_host_note(layout, host, manifest):
+    """Say which shader a host's settings were made for, when it is not the one the block is about."""
+    shader_id = (manifest or {}).get("id")
+    made_for = host.get(ShaderManifest.SOURCE_PROPERTY) if host is not None else None
+    if made_for and shader_id and made_for != shader_id:
+        layout.label(text="The drivers on %s were made for %s - Hook up to move them to %s"
+                     % (host.name, made_for, shader_id), icon='INFO')

@@ -488,6 +488,11 @@ class ApplyShader(bpy.types.Operator):
                 if old_mat.users <= 1:
                     bpy.data.materials.remove(old_mat)
                 new_mat.name = old_mat_name
+                # 记录这份拷贝来自哪个 shader：a scene can wear two shaders, and the control has to know which one
+                # each copy belongs to - its settings table and the sun its globals live on both follow from this
+                # (`UmaShaderControl.shader_of`). Without the tag a copy can only be guessed at from the node group
+                # it drives, which is the fallback for files shaded before the tag existed.
+                new_mat[ShaderManifest.SOURCE_PROPERTY] = manifest["id"]
                 slot.material = new_mat
                 nodes = new_mat.node_tree.nodes
 

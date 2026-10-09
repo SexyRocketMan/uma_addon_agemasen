@@ -339,9 +339,25 @@ def update_action_target(self, context):
         clear_anmi_copy_constraints(uma.action_target)
     uma.prev_action_target = uma.action_target
 
+class UmaShaderSections(bpy.types.PropertyGroup):
+    """Which shading groups one shader's blocks are folded away on.
+
+    A bitmask per *shader* rather than one for the scene, because a scene can wear more than one shader and each
+    draws its own blocks: with a single mask, folding "Diffuse" in one shader's block folds whatever section happens
+    to sit at that index in the other one. Two masks, one for the global block and one for a selected character's
+    overrides, exactly as before - just per shader now.
+    """
+    shader: StringProperty(name="Shader", default="")
+    global_mask: IntProperty(default=0, description="Shading groups folded away in this shader's global list")
+    uma_mask: IntProperty(default=0, description="Shading groups folded away in this shader's character list")
+
+
 class UmaScene(bpy.types.PropertyGroup):
     dummy_coll: CollectionProperty(type=FilteredActions)
     dummy_idx: IntProperty(default=0)
+
+    #: One entry per shader whose blocks have been folded somewhere (see UmaShaderSections).
+    shader_sections: CollectionProperty(type=UmaShaderSections)
 
     del_handle: BoolProperty(name="handle", default=True)
     del_face: BoolProperty(name="face", default=True)
