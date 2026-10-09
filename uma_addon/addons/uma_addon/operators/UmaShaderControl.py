@@ -35,6 +35,14 @@ Measured, not assumed (`shader_driver_eval_check.py`, `shader_control_check.py`,
 What is *not* controlled, on purpose: the five texture inputs and the two per-part toggles (`Toggle If Face`,
 `Emmission Toggle`). Those say *what a part is*, and `Shading` sets them per material.
 
+Where the settings come from
+----------------------------
+The list of settings is **the shader's own interface**, so it is not in this file any more: it is the `settings`
+table of the shader's manifest (`operators/shaders/<id>.json`, read by `operators/ShaderManifest.py`), which also
+names the sun empty and the groups a shader material is recognised by. `TAG` names the version of this file, so a
+report can be told apart from one a stale copy produced. Everything *else* here - the drivers, the override
+sentinel, the verification, the reorder - is name-driven and did not change.
+
 A note on the earlier "drivers do not work here" measurement
 ------------------------------------------------------------
 `shader_driver_check.py` and `shader_socket_driver_check.py` found every route invalid, including a driver on a
@@ -48,19 +56,33 @@ import bpy
 from bpy.props import BoolProperty, IntProperty, StringProperty
 from bpy.types import Operator
 
+from . import ShaderManifest
+
 #: The tag reported by the operators and printed when drivers are hooked up, so a report can be told apart from
-#: one produced by a stale copy of this file (the same convention RigifyChains uses with its build tag).
-TAG = "look-1"
+#: one produced by a stale copy of this file (the same convention RigifyChains uses with its build tag). `look-2`
+#: is the version that stopped owning the settings table and reads it from the shader's manifest instead.
+TAG = "look-2"
+
+# --- the shader's own names, from its manifest ----------------------------------------------------------
+#
+# `SUN_NAME`, `GROUP_HINTS`, `LIBRARY_MATERIALS` and the 18-row `SETTINGS` table were literals in this file. The
+# table is not really *our* data: it is the shader's interface - its socket names, in its order, with the defaults
+# and ranges the panel shows - so a shader with one socket more than ours meant editing this file as well. It is
+# read from `operators/shaders/<id>.json` now (`operators/ShaderManifest.py`), once at import. The look is
+# unchanged: the manifest shipped in this build holds exactly the table this file used to, row for row and field
+# for field (`shader_manifest_check.py` compares the two).
+MANIFEST, MANIFEST_PROBLEMS = ShaderManifest.active()
+MANIFEST_MATERIALS = (MANIFEST or {}).get("materials") or {}
 
 #: The empty the shader library brings in, and the object the global settings live on.
-SUN_NAME = "Uma Sun [DO NOT DELETE]"
+SUN_NAME = (MANIFEST or {}).get("sun") or "Uma Sun"
 
 #: A group node whose node tree name contains one of these is a shader the control drives. The eye half is
 #: defensive: measured, the shipped `Uma Eyes` material carries **no group node at all** (18 nodes of Mix, Math
 #: and Image Texture), so an eye copy is not driven by this control and never will be - its look is its own
 #: emission setup. The hint stays for files that do have such a group, and the control is driven by the socket
 #: names a group actually offers rather than by which group it is.
-GROUP_HINTS = ("Uma Shader", "Uma Eyes")
+GROUP_HINTS = tuple((MANIFEST or {}).get("group_hints") or ())
 
 #: The shader library's own materials and the collection its helper objects live in. `Shading` appends an
 #: "Icosphere of Materials" collection whose sphere carries the library's master materials as slots - a mesh with
@@ -68,8 +90,8 @@ GROUP_HINTS = ("Uma Shader", "Uma Eyes")
 #: is not one: it has no textures, no root empty of its own and nothing to override, and counting it as a
 #: character gave it a set of drivers and made it the seed for the global look (measured: 288 drivers where 252
 #: were expected, and the global seeded from the master material's own defaults).
-LIBRARY_MATERIALS = ("Uma Shader", "Uma Eyes", "Uma Outline Material")
-LIBRARY_COLLECTION_HINT = "Icosphere"
+LIBRARY_MATERIALS = tuple(MANIFEST_MATERIALS.values())
+LIBRARY_COLLECTION_HINT = (MANIFEST or {}).get("collection") or ""
 
 #: The value that means "inherit the global setting". Anything below zero is inherit.
 INHERIT = -1.0
@@ -83,64 +105,7 @@ INHERIT = -1.0
 #: interface order exactly, so a row is where the shader puts it, and this order is also the order the properties
 #: are created in, which is the order Blender's Custom Properties list shows them in (measured: an ID property
 #: group keeps its insertion order, and `hook()` re-orders a file saved by an earlier build).
-SETTINGS = (
-    {"key": "uma_shader_light_threshold", "input": "Light Threshold", "section": "Light Threshold",
-     "kind": "number", "default": 0.2, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
-     "description": "How dark a shaded area has to be before it counts as shadow. Lower catches more of the "
-                    "model; higher keeps more of the flat colour"},
-    {"key": "uma_shader_diffuse_intensity", "input": "Diffuse Intensity", "section": "Diffuse",
-     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
-     "description": "Strength of the lit (diffuse) side of the character"},
-    {"key": "uma_shader_diffuse_saturation", "input": "Diffuse Saturation", "section": "Diffuse",
-     "kind": "number", "default": 1.0, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 2.0,
-     "description": "Colour saturation of the lit side. 0 is greyscale, 1 is the texture's own colours"},
-    {"key": "uma_shader_diffuse_color", "input": "Diffuse Color", "section": "Diffuse",
-     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the lit side, multiplied over the texture"},
-    {"key": "uma_shader_shaded_intensity", "input": "Shaded Intensity", "section": "Shaded",
-     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
-     "description": "Strength of the shadowed side"},
-    {"key": "uma_shader_shaded_saturation", "input": "Shaded Saturation", "section": "Shaded",
-     "kind": "number", "default": 1.0, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 2.0,
-     "description": "Colour saturation of the shadowed side"},
-    {"key": "uma_shader_shaded_color", "input": "Shaded Color", "section": "Shaded",
-     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the shadowed side, multiplied over the texture"},
-    {"key": "uma_shader_metallic_intensity", "input": "Metallic Intensity", "section": "Metallic",
-     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
-     "description": "Strength of the metallic response"},
-    {"key": "uma_shader_metallic_color", "input": "Metallic Color", "section": "Metallic",
-     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the metallic response"},
-    {"key": "uma_shader_highlight_intensity", "input": "Highlight Intensity", "section": "Highlight",
-     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
-     "description": "Strength of the specular highlight"},
-    {"key": "uma_shader_highlight_color", "input": "Highlight Color", "section": "Highlight",
-     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the specular highlight"},
-    {"key": "uma_shader_ambient_rimlight_size", "input": "Ambient Rimlight Size", "section": "Ambient Rimlight",
-     "kind": "number", "default": 0.1, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
-     "description": "Width of the ambient rim, the light that wraps the whole silhouette"},
-    {"key": "uma_shader_ambient_rimlight_intensity", "input": "Ambient Rimlight Intensity",
-     "section": "Ambient Rimlight", "kind": "number",
-     "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
-     "description": "Strength of the ambient rim"},
-    {"key": "uma_shader_ambient_rimlight_color", "input": "Ambient Rimlight Color",
-     "section": "Ambient Rimlight", "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the ambient rim"},
-    {"key": "uma_shader_rimlight_size", "input": "Rimlight Size", "section": "Rimlight",
-     "kind": "number", "default": 0.1, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
-     "description": "Width of the directional rim, the edge light on the lit side"},
-    {"key": "uma_shader_rimlight_intensity", "input": "Rimlight Intensity", "section": "Rimlight",
-     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
-     "description": "Strength of the directional rim"},
-    {"key": "uma_shader_rimlight_color", "input": "Rimlight Color", "section": "Rimlight",
-     "kind": "colour", "default": (1.0, 1.0, 1.0, 1.0),
-     "description": "Tint of the directional rim"},
-    {"key": "uma_shader_emission_intensity", "input": "Emission Intensity", "section": "Emission",
-     "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
-     "description": "Strength of the glow on the parts that have an emission texture (the eyes, mostly)"},
-)
+SETTINGS = tuple((MANIFEST or {}).get("settings") or ())
 
 SETTING_BY_KEY = {setting["key"]: setting for setting in SETTINGS}
 SETTING_BY_INPUT = {setting["input"]: setting for setting in SETTINGS}
@@ -524,6 +489,12 @@ def hook(context, roots=None, materials=None):
     if sun is None:
         report["notes"].append("no '%s' empty in the scene, so Shading has not run here" % SUN_NAME)
         return report
+    if MANIFEST is None:
+        report["notes"].append("no readable shader manifest (%s), so there are no settings to drive"
+                               % "; ".join(MANIFEST_PROBLEMS))
+    elif not SETTINGS:
+        report["notes"].append("%s has no settings table, so there is nothing to drive"
+                               % (MANIFEST.get("name") or MANIFEST.get("id")))
 
     if roots is None or materials is None:
         characters = all_characters(context)
