@@ -87,14 +87,10 @@ def _outline_socket_candidates(modifier, name, identifier):
 
 # --- the shader manifest -------------------------------------------------------------------------------
 #
-# The shader being applied, read once: a manifest is data shipped beside its .blend, so there is nothing to
-# re-read at run time, and `execute` reports the problems rather than raising when it is missing.
-
-MANIFEST, MANIFEST_PROBLEMS = ShaderManifest.active()
-MANIFEST_OUTLINE = (MANIFEST or {}).get("outline") or {}
-OUTLINE_ATTRIBUTE = MANIFEST_OUTLINE.get("source_attribute", "")
-OUTLINE_WIDTH_ATTRIBUTE = MANIFEST_OUTLINE.get("width_attribute", "")
-OUTLINE_WIDTH = MANIFEST_OUTLINE.get("width", 0.0)
+# The shader being applied is the *scene's* choice (`scene.uma_scene.shader`, chosen in the shading panel), so it
+# is read per run inside `execute` - `ShaderManifest.active(context)` - rather than bound to a module constant here.
+# A stale constant is the trap this file does not want: the run would shade with one shader while the panel showed
+# another's settings. `execute` reports the problems rather than raising when the manifest is unreadable.
 
 
 def part_rule(manifest, material_name):
@@ -186,13 +182,13 @@ def bind_texture(nodes, rule, tex_dir, tex_diff, source_path, part_id):
 # correct one - the correct fix is the exporter writing the real set (docs/OUTLINES.md).
 
 #: The outline normal set the group reads by default, and what it is pointed at instead when that channel is
-#: not an outline set - `outline.source_attribute` and `outline.width_attribute` in the manifest, read above.
-#: `OUTLINE_WIDTH` is the width written into it: 0.25 is the smallest value measured to stop the shell covering
+#: not an outline set - `outline.source_attribute` and `outline.width_attribute` in the manifest, read per run.
+#: `outline.width` is the width written into it: 0.25 is the smallest value measured to stop the shell covering
 #: the model. The 0.25 *coverage* below is a different number and stayed in the code, because it is a measured
-#: threshold rather than a name the shader file decides.
+#: threshold rather than a name the shader file decides, and it is passed in rather than read from a constant.
 
 
-def outline_width_coverage(mesh_obj, attribute_name=OUTLINE_ATTRIBUTE):
+def outline_width_coverage(mesh_obj, attribute_name):
     """Share of the mesh whose green channel of ``attribute_name`` is non-zero, or None when it is absent."""
     mesh = mesh_obj.data
     layer = mesh.uv_layers.get(attribute_name)
@@ -235,11 +231,13 @@ def point_outline_group_at(group, attribute_name, depth=0, limit=4):
     return changed
 
 
-def contain_outline(operator, modifier, mesh_obj, blend_file, manifest):
+def contain_outline(operator, modifier, mesh_obj, blend_file, manifest, masters=None):
     """The optional containment described above: camera, width, material. Reports what it did.
 
     Every name it writes through comes from `manifest["outline"]` - the socket names with the legacy identifiers
-    Blender 4.2-5.1 needs, the two attributes, and the outline material's own name.
+    Blender 4.2-5.1 needs, the two attributes, and the outline material, which comes from `masters` (this shader's
+    own copy of the library) rather than from `bpy.data.materials` by name, since two shaders in one scene have two
+    materials called `Uma Outline Material`.
     """
     outline = (manifest or {}).get("outline") or {}
     inputs = outline.get("inputs") or {}
@@ -283,21 +281,124 @@ def contain_outline(operator, modifier, mesh_obj, blend_file, manifest):
                       f"{source_attribute} alone")
 
     # 3. the shell's own material, so it reads as a line rather than the character's shading flipped
-    material_name = (manifest.get("materials") or {}).get(outline.get("material"))
-    material = bpy.data.materials.get(material_name) if material_name else None
-    if material is None and material_name:
-        with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
-            if material_name in data_from.materials:
-                data_to.materials.append(material_name)
-        material = bpy.data.materials.get(material_name)
+    material = (masters or {}).get(outline.get("material"))
     material_input = inputs.get("material") or {}
     if material is not None and material_input:
         operator.report({'INFO'}, "outline camera, width and material set")
         if set_modifier_input(modifier, material_input["name"], material_input["identifier"], material):
             print(f"[uma_addon] outline shell uses {material.name!r}")
     else:
-        print(f"[uma_addon] {manifest.get('blend')} has no {material_name!r}, so the shell keeps the "
+        print(f"[uma_addon] the library has no {outline.get('material')!r} material, so the shell keeps the "
               "character's own material")
+
+
+# --- the library in the scene --------------------------------------------------------------------------
+#
+# A scene can hold two shaders at once, and the reason it needs care is that both files name everything the same:
+# the collection, the sphere, the sun empty, the master materials, the outline node group. So "is the library in
+# the scene?" cannot be answered by name - it would reuse the first library's `Uma Shader` for the second shader,
+# and the copy would look right while shading with the old group. What answers it is the tag
+# `ShaderManifest.SOURCE_PROPERTY`, written on everything an append brings in, which is also what lets
+# `UmaShaderControl.sun_object` pick the sun of the shader the *scene* has selected.
+
+def library_masters(collection, manifest):
+    """`{role: material}` for the copy of the library that came with *this* collection.
+
+    The sphere in the library collection carries the master materials as slots (measured: four, the three the
+    manifest names plus a placeholder), so they are looked up *there* rather than with `bpy.data.materials.get`,
+    which would hand back the first library's material whose name matches - Blender renames the second library's to
+    `Uma Shader.001`, and that suffix is the only thing that tells the two apart by name.
+    """
+    names = manifest.get("materials") or {}
+    found = {}
+    for obj in collection.all_objects:
+        for slot in obj.material_slots:
+            material = slot.material
+            if material is None:
+                continue
+            for role, name in names.items():
+                if role in found or not name:
+                    continue
+                if material.name == name or material.name.startswith(name + "."):
+                    found[role] = material
+    return found
+
+
+def ensure_library(manifest, blend_file, context):
+    """Make sure this scene holds *this* shader's library. Returns `(collection, {role: material}, notes)`.
+
+    Three cases, and the third is the one that matters: the library for this shader is already here (tagged with its
+    id, so two shaders can be in one scene); a library is here with no tag at all, which can only be a file shaded
+    before the tag existed - and then only the *default* shader's library could have been appended, so it is adopted
+    and tagged; or nothing matches, and the file's own collection is appended, which Blender renames to
+    "... Collection.001" when the other shader's is already there.
+    """
+    wanted = manifest["collection"]
+    for collection in bpy.data.collections:
+        if wanted not in collection.name:
+            continue
+        source = collection.get(ShaderManifest.SOURCE_PROPERTY)
+        if source == manifest["id"]:
+            return collection, library_masters(collection, manifest), []
+        if source is None and manifest["id"] == ShaderManifest.DEFAULT_ID:
+            collection[ShaderManifest.SOURCE_PROPERTY] = manifest["id"]
+            return collection, library_masters(collection, manifest), \
+                ["adopted the untagged %r as %s's library" % (collection.name, manifest["id"])]
+
+    before = set(bpy.data.collections)
+    file_collection = None
+    with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
+        file_collection = next((name for name in data_from.collections if wanted in name), None)
+        if file_collection is not None:
+            data_to.collections.append(file_collection)
+    if file_collection is None:
+        return None, {}, ["%s has no collection matching %r" % (manifest["blend"], wanted)]
+
+    fresh = [collection for collection in bpy.data.collections if collection not in before]
+    for collection in fresh:
+        collection[ShaderManifest.SOURCE_PROPERTY] = manifest["id"]
+    collection = fresh[0] if fresh else None
+    if collection is None:
+        return None, {}, ["%s was appended but is not in bpy.data.collections" % file_collection]
+    if collection.name not in context.scene.collection.children:
+        context.scene.collection.children.link(collection)
+
+    masters = library_masters(collection, manifest)
+    notes = []
+    if len(masters) < len(manifest.get("materials") or {}):
+        notes.append("%r carries %d of the %d materials the manifest names (%s); the sphere is what holds them, so "
+                     "a scene whose sphere was deleted shades from what is left"
+                     % (collection.name, len(masters), len(manifest.get("materials") or {}),
+                        ", ".join(sorted(masters))))
+    return collection, masters, notes
+
+
+def ensure_node_group(blend_file, group_name, manifest_id):
+    """The shader file's own copy of a node group, tagged like the collection, or None when the file has none.
+
+    Both shaders name their outline group `Uma Outlines`, so the same by-name trap applies: a mesh shaded with one
+    shader and a mesh shaded with the other would otherwise be given the same group. The tag is what separates them,
+    and a group that is already there with no tag is adopted when it is the default shader asking.
+    """
+    for group in bpy.data.node_groups:
+        if group.name == group_name and group.get(ShaderManifest.SOURCE_PROPERTY) == manifest_id:
+            return group
+    if manifest_id == ShaderManifest.DEFAULT_ID:
+        untagged = [group for group in bpy.data.node_groups
+                    if group.name == group_name and not group.get(ShaderManifest.SOURCE_PROPERTY)]
+        if untagged:
+            untagged[0][ShaderManifest.SOURCE_PROPERTY] = manifest_id
+            return untagged[0]
+
+    before = set(bpy.data.node_groups)
+    with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
+        if group_name not in data_from.node_groups:
+            return None
+        data_to.node_groups.append(group_name)
+    fresh = [group for group in bpy.data.node_groups if group not in before]
+    for group in fresh:
+        group[ShaderManifest.SOURCE_PROPERTY] = manifest_id
+    return fresh[0] if fresh else None
 
 
 class ApplyShader(bpy.types.Operator):
@@ -320,10 +421,11 @@ class ApplyShader(bpy.types.Operator):
         fix_outlines = bool(getattr(getattr(context.scene, "uma_scene", None), "fix_outlines", False))
         
         # The shader this run applies, and everything it is made of - the .blend, the collection to append, the
-        # part rules, the materials, the texture recipes, the per-part toggles and the outline. A manifest that
-        # is missing cannot be worked around, so it cancels; one that is readable but incomplete is reported and
-        # the run carries on, applying every part of the look that *was* described.
-        manifest, problems = ShaderManifest.active()
+        # part rules, the materials, the texture recipes, the per-part toggles and the outline. The *scene* decides
+        # which shader that is (`scene.uma_scene.shader`, chosen in the shading panel), so the context goes in. A
+        # manifest that is missing cannot be worked around, so it cancels; one that is readable but incomplete is
+        # reported and the run carries on, applying every part of the look that *was* described.
+        manifest, problems = ShaderManifest.active(context)
         if manifest is None:
             self.report({'ERROR'}, "no shader manifest: %s" % "; ".join(problems or ["unknown reason"]))
             return {'CANCELLED'}
@@ -338,27 +440,11 @@ class ApplyShader(bpy.types.Operator):
             return {'CANCELLED'}
 
         # 追加 Icosphere of Materials Collection
-        col_name = None
-        with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
-            for name in data_from.collections:
-                if manifest["collection"] in name:
-                    col_name = name
-                    break
-            if col_name:
-                # 只在当前工程没有该集合时追加
-                if col_name not in bpy.data.collections:
-                    data_to.collections.append(col_name)
-            else:
-                self.report({'ERROR'}, "%s not found in %s" % (manifest["collection"], manifest["blend"]))
-                return {'CANCELLED'}
-        
-        # 链接到当前场景的视图层
-        coll = bpy.data.collections.get(col_name)
-        if coll:
-            if coll.name not in context.scene.collection.children:
-                context.scene.collection.children.link(coll)
-        else:
-            self.report({'ERROR'}, "Failed to load %s" % manifest["collection"])
+        library, masters, problems_here = ensure_library(manifest, blend_file, context)
+        for problem in problems_here:
+            print(f"[uma_addon] {problem}")
+        if library is None:
+            self.report({'ERROR'}, "%s not found in %s" % (manifest["collection"], manifest["blend"]))
             return {'CANCELLED'}
 
         # 遍历选中模型的材质槽
@@ -387,17 +473,14 @@ class ApplyShader(bpy.types.Operator):
                 tex_dir = os.path.dirname(img_path)
                 tex_diff = os.path.basename(img_path)
 
-                # 找到该部位对应的 shader 材质
-                target_shader_name = (manifest.get("materials") or {}).get(rule.get("material"))
-                uma_shader = bpy.data.materials.get(target_shader_name) if target_shader_name else None
-                if not uma_shader:
-                    with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
-                        if target_shader_name in data_from.materials:
-                            data_to.materials.append(target_shader_name)
-                            uma_shader = bpy.data.materials.get(target_shader_name)
-                        else:
-                            self.report({'ERROR'}, f"{target_shader_name} not found in {manifest['blend']}")
-                            return {'CANCELLED'}
+                # 找到该部位对应的 shader 材质：from *this* shader's library copy, not by name
+                role = rule.get("material")
+                uma_shader = masters.get(role)
+                if uma_shader is None:
+                    self.report({'ERROR'}, "the %s library carries no %r material (%s)"
+                                % (manifest["blend"], role,
+                                   (manifest.get("materials") or {}).get(role)))
+                    return {'CANCELLED'}
 
                 # 对材质进行深拷贝并替换
                 new_mat = uma_shader.copy()
@@ -424,11 +507,7 @@ class ApplyShader(bpy.types.Operator):
         group_name = outline.get("group")
         if outline and modifier_name and group_name:
             if modifier_name not in obj.modifiers:
-                if group_name not in bpy.data.node_groups:
-                    with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
-                        if group_name in data_from.node_groups:
-                            data_to.node_groups.append(group_name)
-                node_group = bpy.data.node_groups.get(group_name)
+                node_group = ensure_node_group(blend_file, group_name, manifest["id"])
                 if node_group:
                     geom_mod = obj.modifiers.new(name=modifier_name, type='NODES')
                     geom_mod.node_group = node_group
@@ -440,7 +519,7 @@ class ApplyShader(bpy.types.Operator):
                 if depth:
                     set_modifier_input(geom_mod, depth["name"], depth["identifier"], depth["value"])
                 if fix_outlines:
-                    contain_outline(self, geom_mod, obj, blend_file, manifest)
+                    contain_outline(self, geom_mod, obj, blend_file, manifest, masters)
 
         # The central shading control: one property per setting on the sun empty, one override per character on
         # its root empty, and a driver per setting per copy resolving override -> global. Hooked up here so a

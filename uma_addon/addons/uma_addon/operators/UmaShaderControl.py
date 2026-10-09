@@ -54,66 +54,127 @@ is why `_settle()` below tags before it verifies, and why `verify()` exists at a
 
 import bpy
 from bpy.props import BoolProperty, IntProperty, StringProperty
-from bpy.types import Operator
+from bpy.types import Menu, Operator
 
 from . import ShaderManifest
 
 #: The tag reported by the operators and printed when drivers are hooked up, so a report can be told apart from
 #: one produced by a stale copy of this file (the same convention RigifyChains uses with its build tag). `look-2`
-#: is the version that stopped owning the settings table and reads it from the shader's manifest instead.
-TAG = "look-2"
+#: stopped this file owning the settings table; `look-3` made the table follow the shader the *scene* chooses.
+TAG = "look-3"
 
 # --- the shader's own names, from its manifest ----------------------------------------------------------
 #
-# `SUN_NAME`, `GROUP_HINTS`, `LIBRARY_MATERIALS` and the 18-row `SETTINGS` table were literals in this file. The
-# table is not really *our* data: it is the shader's interface - its socket names, in its order, with the defaults
-# and ranges the panel shows - so a shader with one socket more than ours meant editing this file as well. It is
-# read from `operators/shaders/<id>.json` now (`operators/ShaderManifest.py`), once at import. The look is
-# unchanged: the manifest shipped in this build holds exactly the table this file used to, row for row and field
-# for field (`shader_manifest_check.py` compares the two).
-MANIFEST, MANIFEST_PROBLEMS = ShaderManifest.active()
-MANIFEST_MATERIALS = (MANIFEST or {}).get("materials") or {}
+# `SUN_NAME`, `GROUP_HINTS`, `LIBRARY_MATERIALS` and the settings table were literals in this file. The table is not
+# really *our* data: it is the shader's interface - its socket names, in its order, with the defaults and ranges the
+# panel shows - so a shader with one socket more than ours meant editing this file as well. It comes from
+# `operators/shaders/<id>.json` (`operators/ShaderManifest.py`), and since a scene can now choose its shader the
+# names below are **rebound** rather than constants: `use_table(context)` points them at one shader's manifest and
+# is called at every entry point (see its own docstring for why that is the design and what it costs).
 
-#: The empty the shader library brings in, and the object the global settings live on.
-SUN_NAME = (MANIFEST or {}).get("sun") or "Uma Sun"
-
-#: A group node whose node tree name contains one of these is a shader the control drives. The eye half is
-#: defensive: measured, the shipped `Uma Eyes` material carries **no group node at all** (18 nodes of Mix, Math
-#: and Image Texture), so an eye copy is not driven by this control and never will be - its look is its own
-#: emission setup. The hint stays for files that do have such a group, and the control is driven by the socket
-#: names a group actually offers rather than by which group it is.
-GROUP_HINTS = tuple((MANIFEST or {}).get("group_hints") or ())
-
-#: The shader library's own materials and the collection its helper objects live in. `Shading` appends an
-#: "Icosphere of Materials" collection whose sphere carries the library's master materials as slots - a mesh with
-#: a material that has a `Uma Shader` group node, i.e. exactly what a character looks like from the outside. It
-#: is not one: it has no textures, no root empty of its own and nothing to override, and counting it as a
-#: character gave it a set of drivers and made it the seed for the global look (measured: 288 drivers where 252
-#: were expected, and the global seeded from the master material's own defaults).
-LIBRARY_MATERIALS = tuple(MANIFEST_MATERIALS.values())
-LIBRARY_COLLECTION_HINT = (MANIFEST or {}).get("collection") or ""
+MANIFEST = None
+MANIFEST_PROBLEMS = []
+TABLE_ID = ""
+SETTINGS = ()
+SETTING_BY_KEY = {}
+SETTING_BY_INPUT = {}
+KEYS = ()
+SECTION_ORDER = ()
+NUMERIC_KEYS = ()
+COLOUR_KEYS = ()
+SUN_NAME = "Uma Sun"
+GROUP_HINTS = ()
+LIBRARY_MATERIALS = ()
+LIBRARY_COLLECTION_HINT = ""
 
 #: The value that means "inherit the global setting". Anything below zero is inherit.
 INHERIT = -1.0
 
-#: Every setting the control drives, in the order the shader's own interface lists them.
-#:
-#: `key` is the ID property name on the sun and root empties (so a driver's data path is `'["uma_shader_x"]'`),
-#: `input` is the socket on the shader group, and the two are deliberately similar rather than identical: the
-#: socket names are upstream's and must match it exactly, the property names are ours and must stay stable, since
-#: they are written into drivers that live in the .blend. `section` is the shader's own grouping - it follows its
-#: interface order exactly, so a row is where the shader puts it, and this order is also the order the properties
-#: are created in, which is the order Blender's Custom Properties list shows them in (measured: an ID property
-#: group keeps its insertion order, and `hook()` re-orders a file saved by an earlier build).
-SETTINGS = tuple((MANIFEST or {}).get("settings") or ())
 
-SETTING_BY_KEY = {setting["key"]: setting for setting in SETTINGS}
-SETTING_BY_INPUT = {setting["input"]: setting for setting in SETTINGS}
-KEYS = tuple(setting["key"] for setting in SETTINGS)
+def table_for(manifest):
+    """Everything the rest of this file reads out of one manifest, in one place.
 
-#: The sections, in the shader's own order: the settings table is already sorted by them, so this is just its
-#: distinct values in the order they first appear.
-SECTION_ORDER = tuple(dict.fromkeys(setting["section"] for setting in SETTINGS))
+    * `settings`, `by_key` and `by_input`: the table itself. `key` is the ID property name on the sun and root
+      empties (so a driver's data path is `'["uma_shader_x"]'`), `input` is the socket on the shader group, and the
+      two are deliberately similar rather than identical: the socket names are upstream's and must match it exactly,
+      the property names are ours and must stay stable, since they are written into drivers that live in the .blend.
+      `section` is the shader's own grouping - it follows its interface order exactly, so a row is where the shader
+      puts it, and this order is also the order the properties are created in, which is the order Blender's Custom
+      Properties list shows them in (measured: an ID property group keeps its insertion order, and `hook()`
+      re-orders a file saved by an earlier build).
+    * `keys`/`sections`/`numeric`/`colours`: the derived views the panel and the operators use.
+    * `sun`: the empty the shader library brings in, and the object the global settings live on.
+    * `group_hints`: a group node whose node tree name contains one of these is a shader the control drives. The eye
+      half is defensive: measured, the shipped `Uma Eyes` material carries **no group node at all** (18 nodes of
+      Mix, Math and Image Texture), so an eye copy is not driven by this control and never will be - its look is its
+      own emission setup. The hint stays for files that do have such a group, and the control is driven by the
+      socket names a group actually offers rather than by which group it is.
+    * `library_materials` and `collection_hint`: the shader library's own materials and the collection its helper
+      objects live in. `Shading` appends an "Icosphere of Materials" collection whose sphere carries the library's
+      master materials as slots - a mesh with a material that has a `Uma Shader` group node, i.e. exactly what a
+      character looks like from the outside. It is not one: it has no textures, no root empty of its own and nothing
+      to override, and counting it as a character gave it a set of drivers and made it the seed for the global look
+      (measured: 288 drivers where 252 were expected, and the global seeded from the master material's own
+      defaults).
+    """
+    manifest = manifest or {}
+    settings = tuple(manifest.get("settings") or ())
+    materials = manifest.get("materials") or {}
+    return {
+        "id": manifest.get("id") or "",
+        "settings": settings,
+        "by_key": {row["key"]: row for row in settings},
+        "by_input": {row["input"]: row for row in settings},
+        "keys": tuple(row["key"] for row in settings),
+        "sections": tuple(dict.fromkeys(row["section"] for row in settings)),
+        "numeric": tuple(row["key"] for row in settings if row.get("kind") == "number"),
+        "colours": tuple(row["key"] for row in settings if row.get("kind") == "colour"),
+        "sun": manifest.get("sun") or "Uma Sun",
+        "group_hints": tuple(manifest.get("group_hints") or ()),
+        "library_materials": tuple(materials.values()),
+        "collection_hint": manifest.get("collection") or "",
+    }
+
+
+def use_table(context=None):
+    """Point every name above at one shader's table, and return `(manifest, problems)`.
+
+    The names are module globals because about twenty functions read them, and a scene can choose its shader, so
+    they are *rebound* at the entry points instead of being constants of the default shader. The rule that makes
+    that safe: **every public entry point starts with this call** - `hook`, `verify`, `bake`, `status`,
+    `draw_shading_control`, `sun_object` (which is asked which sun a scene's settings live on, i.e. which shader the
+    scene chose) and the operators that call them. A stale table would be silent rather than loud, which is why the
+    id is kept in `TABLE_ID`, reported by `describe()`, and written onto the sun by `hook()` so the panel can say
+    when the drivers in a file were made for a different shader than the one now selected.
+    """
+    global MANIFEST, MANIFEST_PROBLEMS, TABLE_ID
+    global SETTINGS, SETTING_BY_KEY, SETTING_BY_INPUT, KEYS, SECTION_ORDER, NUMERIC_KEYS, COLOUR_KEYS
+    global SUN_NAME, GROUP_HINTS, LIBRARY_MATERIALS, LIBRARY_COLLECTION_HINT
+    MANIFEST, MANIFEST_PROBLEMS = ShaderManifest.active(context)
+    table = table_for(MANIFEST)
+    TABLE_ID = table["id"]
+    SETTINGS = table["settings"]
+    SETTING_BY_KEY = table["by_key"]
+    SETTING_BY_INPUT = table["by_input"]
+    KEYS = table["keys"]
+    SECTION_ORDER = table["sections"]
+    NUMERIC_KEYS = table["numeric"]
+    COLOUR_KEYS = table["colours"]
+    SUN_NAME = table["sun"]
+    GROUP_HINTS = table["group_hints"]
+    LIBRARY_MATERIALS = table["library_materials"]
+    LIBRARY_COLLECTION_HINT = table["collection_hint"]
+    return MANIFEST, MANIFEST_PROBLEMS
+
+
+def describe():
+    """One line naming the shader a run used, for a report: an id and how many settings it drives."""
+    return "%s (%d setting(s))" % (TABLE_ID or "no manifest", len(SETTINGS))
+
+
+# The default shader's table, so the names exist for everything defined below (a default argument like
+# `keys=KEYS` is bound when the function is defined, which is why those two take `None` and read the global).
+use_table()
 
 
 def section_keys(section):
@@ -121,19 +182,46 @@ def section_keys(section):
     return tuple(setting["key"] for setting in SETTINGS if setting["section"] == section)
 
 
-#: The numeric settings, and the colours, as two views of the same table.
-NUMERIC_KEYS = tuple(setting["key"] for setting in SETTINGS if setting["kind"] == "number")
-COLOUR_KEYS = tuple(setting["key"] for setting in SETTINGS if setting["kind"] == "colour")
-
-
 # --- what is in the scene ------------------------------------------------------------------------------
 
+def library_collection(context=None):
+    """The library collection of the shader this scene is set to, when the scene holds it.
+
+    Both shader files name their collection the same ("Icosphere of Materials Collection"), so a scene that shaded
+    with one shader and then with another holds two of them, each with its own sphere and its own `Uma Sun`. The
+    tag `Shading` writes with the append (`ShaderManifest.SOURCE_PROPERTY`) is what tells them apart; a collection
+    with no tag is from a build before that property existed, which could only have been the default shader's.
+    """
+    hint = LIBRARY_COLLECTION_HINT
+    if not hint:
+        return None
+    wanted = TABLE_ID or ShaderManifest.DEFAULT_ID
+    for collection in bpy.data.collections:
+        if hint in collection.name and collection.get(ShaderManifest.SOURCE_PROPERTY) == wanted:
+            return collection
+    return next((collection for collection in bpy.data.collections if hint in collection.name), None)
+
+
 def sun_object(context=None):
-    """The empty the global settings live on: the shader library's own sun, or None if shading has not run."""
+    """The empty the global settings live on: the shader library's own sun, or None if shading has not run.
+
+    Asking for the sun is asking *which shader this scene is set to* - each library brings its own - so this is also
+    where the table is pointed at that shader's manifest (`use_table`), which makes the panel, the hook-up and the
+    verification all agree with the scene's choice. The sun is looked for inside the selected shader's collection
+    first, then by name, then by prefix: the name carries a suffix a user could have edited, and a renamed object
+    is still the sun.
+    """
+    use_table(context)
+    collection = library_collection(context)
+    if collection is not None:
+        sun = next((obj for obj in collection.all_objects
+                    if obj.type == 'EMPTY' and obj.name.startswith("Uma Sun")), None)
+        if sun is not None:
+            return sun
     sun = bpy.data.objects.get(SUN_NAME)
     if sun is None:
-        # the name carries a suffix a user could have edited, and a renamed object is still the sun
-        sun = next((obj for obj in bpy.data.objects if obj.name.startswith("Uma Sun")), None)
+        sun = next((obj for obj in bpy.data.objects
+                    if obj.type == 'EMPTY' and obj.name.startswith("Uma Sun")), None)
     return sun
 
 
@@ -258,6 +346,7 @@ def panel_character(context):
 
 def resolve_values(context, root=None):
     """What every setting currently comes out as: the global value, or `root`'s override when it has one."""
+    use_table(context)
     sun = sun_object(context)
     values = {}
     for setting in SETTINGS:
@@ -303,7 +392,7 @@ def is_inheriting(value, setting):
     return float(value) < 0.0
 
 
-def ensure_properties(obj, keys=KEYS, seed=None, inherit=False):
+def ensure_properties(obj, keys=None, seed=None, inherit=False):
     """Create the settings on `obj` if they are missing, with the UI metadata that makes them usable.
 
     An ID property is a bare number in Blender's Custom Properties panel until `id_properties_ui` gives it a
@@ -314,7 +403,11 @@ def ensure_properties(obj, keys=KEYS, seed=None, inherit=False):
     character is in until somebody says otherwise. Creating overrides at the default instead is a bug worth
     naming, since it looks like nothing is wrong: every character quietly pins itself to 0.2 and the global
     slider appears dead (measured - seven copies stayed at 0.2 with the global at 0.42).
+
+    `keys=None` rather than `keys=KEYS` on purpose: a default argument is bound when the function is *defined*, so
+    a table that a scene can change would be frozen into it.
     """
+    keys = KEYS if keys is None else keys
     created = []
     for key in keys:
         setting = SETTING_BY_KEY[key]
@@ -352,7 +445,7 @@ def describe_property(obj, key):
         return None
 
 
-def reorder_properties(obj, keys=KEYS):
+def reorder_properties(obj, keys=None):
     """Put the settings in the shader's own order, which is the order Blender's own list shows them in.
 
     Measured, because the user asked and it decides what is possible (`shader_property_shape_check.py`): an ID
@@ -365,6 +458,7 @@ def reorder_properties(obj, keys=KEYS):
 
     Returns the keys it moved, or an empty tuple when they were already in order.
     """
+    keys = KEYS if keys is None else keys
     ours = [name for name in obj.keys() if name in SETTING_BY_KEY]
     wanted = [key for key in keys if key in ours]
     if ours == wanted:
@@ -484,6 +578,7 @@ def hook(context, roots=None, materials=None):
     Returns a report dictionary: how many drivers were made, per character, and anything that had to be said -
     a material shared by two characters, a copy whose shader group lacks a setting, or a driver that did not take.
     """
+    use_table(context)                      # the scene's shader decides the table, so read it here
     sun = sun_object(context)
     report = {"tag": TAG, "drivers": 0, "copies": 0, "characters": [], "notes": [], "verified": None}
     if sun is None:
@@ -558,7 +653,15 @@ def hook(context, roots=None, materials=None):
         report["characters"].append(entry)
         report["drivers"] += entry["drivers"]
 
+    # Which shader made these settings, so the panel can say when a file's drivers are for a shader other than the
+    # one now selected - the state a scene is in between choosing another shader and pressing Hook up.
+    try:
+        sun[ShaderManifest.SOURCE_PROPERTY] = TABLE_ID
+    except (TypeError, AttributeError):
+        pass
+
     report["verified"] = verify(context, characters)
+    report["shader"] = TABLE_ID
     return report
 
 
@@ -598,6 +701,7 @@ def verify(context, characters=None, settle=True):
     every character's copies against the global reported seven failures on a two-character file whose control was
     doing exactly what it had been asked to do.
     """
+    use_table(context)
     if characters is None:
         characters = all_characters(context)
     sun = sun_object(context)
@@ -639,6 +743,7 @@ def bake(context, roots=None):
     character that had an override would quietly throw that character's look away, which is the one thing a bake
     must not do.
     """
+    use_table(context)
     if roots is None:
         characters = all_characters(context)
     else:
@@ -668,6 +773,7 @@ def bake(context, roots=None):
 
 def status(context):
     """Which mode the selected character is in: `driven`, `baked`, or `none` when no shader copy has drivers."""
+    use_table(context)
     _root, objects = character_objects(context)
     materials = character_materials(objects)
     if not materials:
@@ -685,6 +791,65 @@ def status(context):
 
 
 # --- operators -----------------------------------------------------------------------------------------
+
+class ShaderControlChoose(Operator):
+    """Point this scene at one of the shipped shaders"""
+    bl_idname = "uma.shader_choose"
+    bl_label = "Shader"
+    bl_description = ("Which shader library this scene shades with. It applies to the next Shading run - materials "
+                      "that were already copied keep the shader they were made from - and the panel's rows become "
+                      "that shader's own settings")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    shader: StringProperty(name="Shader", description="The id of the manifest to use, from operators/shaders/")
+
+    def execute(self, context):
+        scene_props = getattr(context.scene, "uma_scene", None)
+        if scene_props is None:
+            self.report({'ERROR'}, "this scene has no uma add-on properties, so it cannot choose a shader")
+            return {'CANCELLED'}
+        manifest, problems = ShaderManifest.load(self.shader)
+        if manifest is None:
+            self.report({'ERROR'}, "no usable shader manifest for %s: %s"
+                        % (self.shader, "; ".join(problems or ["unknown reason"])))
+            return {'CANCELLED'}
+
+        previous = getattr(scene_props, "shader", "") or ShaderManifest.DEFAULT_ID
+        scene_props.shader = self.shader
+        use_table(context)
+        was = reorder_properties(sun_object(context))    # nothing to do on a fresh scene; harmless otherwise
+        self.report({'INFO'}, "%s: %d setting(s). Shading applies it to the next character you shade; 'Hook up' "
+                              "re-writes the drivers from its table" % (describe(), len(SETTINGS)))
+        if previous != TABLE_ID:
+            print("[uma_addon] %s: shading is now %s (was %s); rows and drivers follow it from here, and the "
+                  "collection and sun of the other shader stay in the scene" % (TAG, TABLE_ID, previous))
+        if was is None:
+            print("[uma_addon] %s: no sun empty in this scene yet, so run Shading on a character" % TAG)
+        return {'FINISHED'}
+
+
+class ShaderControlMenu(Menu):
+    """The chooser's list: one entry per readable manifest, built from the folder rather than hardcoded."""
+    bl_idname = "UMA_MT_shader_choose"
+    bl_label = "Shader"
+
+    def draw(self, context):
+        layout = self.layout
+        current = ShaderManifest.chosen_id(context)
+        entries = ShaderManifest.items()
+        if not entries:
+            layout.label(text="no shader manifests found", icon='ERROR')
+            return
+        for manifest_id, name, tooltip in entries:
+            row = layout.row(align=True)
+            entry = row.operator(ShaderControlChoose.bl_idname, text=name,
+                                 icon='CHECKMARK' if manifest_id == current else 'NONE')
+            entry.shader = manifest_id
+            if manifest_id == current:
+                row.label(text="in use")
+        layout.separator()
+        layout.label(text="%d shader(s) in operators/shaders/" % len(entries), icon='INFO')
+
 
 class ShaderControlHook(Operator):
     """Connect the shader settings of every uma to the sun empty and to each character's own overrides"""
@@ -1021,10 +1186,25 @@ def _draw_local_block(layout, root, sun, scene_props):
 
 
 def draw_shading_control(layout, context):
-    """The panel: the mode line and its two buttons, then either the global values or the selected uma's."""
+    """The panel: which shader the scene uses, the mode line and its two buttons, then the values."""
+    use_table(context)                      # the scene's shader chooses the table this panel draws from
     sun = sun_object(context)
     scene_props = getattr(context.scene, "uma_scene", None)
     mode, drivers = status(context)
+
+    # Which shader this scene shades with - one row, drawn from the manifests that are actually installed, so a
+    # shader dropped into `operators/shaders/` appears here without a code change. Shading has to run again for it
+    # to affect materials, and Hook up re-writes the drivers from its settings table, so those two sentences are in
+    # the tooltip rather than in the panel.
+    chooser = layout.row(align=True)
+    chooser.label(text="Shader")
+    if MANIFEST is None:
+        chooser.label(text="no readable manifest", icon='ERROR')
+    else:
+        chooser.menu(ShaderControlMenu.bl_idname,
+                     text="%s (%d setting(s))" % (MANIFEST.get("name") or TABLE_ID, len(SETTINGS)))
+    for problem in MANIFEST_PROBLEMS:
+        layout.label(text=problem, icon='ERROR')
 
     row = layout.row(align=True)
     row.operator(ShaderControlHook.bl_idname, icon='DRIVER')
@@ -1036,6 +1216,14 @@ def draw_shading_control(layout, context):
                      icon='ERROR')
     else:
         layout.label(text="No uma shader here yet: run Shading on a character", icon='INFO')
+
+    # The drivers in a file were made for one shader. Choosing another and not hooking up again is a real state -
+    # the shared settings keep working (they are resolved by name) and the new shader's own ones do nothing - so it
+    # is said out loud rather than left to be discovered.
+    made_for = sun.get(ShaderManifest.SOURCE_PROPERTY) if sun is not None else None
+    if made_for and made_for != TABLE_ID:
+        layout.label(text="The drivers here were made for %s - Hook up to move them to %s"
+                     % (made_for, TABLE_ID), icon='INFO')
 
     if sun is None or scene_props is None:
         return

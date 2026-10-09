@@ -364,6 +364,21 @@ class UmaScene(bpy.types.PropertyGroup):
                     "them, so one slider moves every uma in the scene and a character can still differ. Without "
                     "it the values stay per material and have to be matched by hand; see docs/SHADER_LOOK.md")
 
+    # Which shader library this scene shades with: the id of a manifest in `operators/shaders/`, empty meaning the
+    # add-on's default. A scene property rather than a preference, because the shader travels with the scene - and a
+    # **StringProperty** rather than an EnumProperty, deliberately: an enum whose `items` is a callback cannot have a
+    # string default ("'default' can only be an integer when 'items' is a function" - the same rule the action
+    # category in this file documents), so it would store an *index* into a list that changes when a manifest is
+    # added or removed. The id is what the file and the drivers mean, so the id is what is stored; the panel draws a
+    # menu from `ShaderManifest.items()` instead.
+    shader: StringProperty(
+        name="Shader",
+        default="",
+        description="Which shader library Shading applies and which settings the control drives. Empty means the "
+                    "add-on's default. It applies to the next Shading run - materials that were already copied keep "
+                    "the shader they were made from, and 'Hook up' re-writes the drivers from the new shader's own "
+                    "settings table. See docs/SHADER_INTERFACE.md")
+
     face_normals: BoolProperty(
         name="Face normals that survive morphs",
         default=True,

@@ -30,9 +30,14 @@ import os
 #: Where the manifests live, beside the `.blend` files they describe (`"blend"` is resolved against this folder).
 DIRECTORY = os.path.join(os.path.dirname(__file__), "shaders")
 
-#: The shader `Shading` uses when nothing else is chosen. The per-scene choice is step 5 of
-#: `docs/SHADER_INTERFACE.md`; until it exists this is the one shader the add-on has.
+#: The shader `Shading` uses when a scene has not chosen one.
 DEFAULT_ID = "umashader-0.2.4"
+
+#: The ID property that records which shader a datablock belongs to: the library collection the append step created,
+#: and the sun empty whose settings were made for one shader. One name, one meaning - "this came from / belongs to
+#: <manifest id>" - and it is what makes two shaders in one scene tell each other apart, since both files name their
+#: collection and their sun the same.
+SOURCE_PROPERTY = "uma_shader_source"
 
 #: Fields a manifest must have as text, a list, and a table of recipes: `parts`/`textures`/`outline` for
 #: `Shading`, `settings`/`sun`/`group_hints` for the control. `settings` may be empty (a shader with nothing to
@@ -155,9 +160,48 @@ def load(manifest_id=None):
     return manifest, problems
 
 
-def active():
-    """The manifest `Shading` and the control use, with its problems if it has any."""
-    return load(DEFAULT_ID)
+def chosen_id(context=None):
+    """The id a scene is set to, or the default when it has not chosen. Read even when it is not installed."""
+    scene = getattr(context, "scene", None)
+    chosen = getattr(getattr(scene, "uma_scene", None), "shader", "") or ""
+    return chosen or DEFAULT_ID
+
+
+def active(context=None):
+    """The manifest of the shader this scene shades with, with its problems.
+
+    The choice is a scene property (`scene.uma_scene.shader`, empty meaning this add-on's default), because a scene
+    handed to somebody else should carry the shader it was shaded with - and because the settings table below it is
+    the shader's own interface, not ours. A scene that asks for a shader which is not installed (the file was
+    removed, or the manifest with it) falls back to the default **and says so** rather than shading with nothing.
+    """
+    chosen = chosen_id(context)
+    if chosen == DEFAULT_ID:
+        return load(DEFAULT_ID)
+    manifest, problems = load(chosen)
+    if manifest is not None:
+        return manifest, problems
+    fallback, fallback_problems = load(DEFAULT_ID)
+    return fallback, list(problems) + ["shading with %s instead" % DEFAULT_ID] + list(fallback_problems)
+
+
+def items():
+    """`(id, name, tooltip)` for every readable manifest, the default first - what a chooser lists.
+
+    Built from the folder rather than from a hardcoded list, which is the whole point of a manifest: dropping a
+    shader in makes it selectable, and removing one takes it out of the list without leaving a dead entry behind.
+    """
+    found = available()
+    order = ([DEFAULT_ID] if DEFAULT_ID in found else []) + sorted(key for key in found if key != DEFAULT_ID)
+    entries = []
+    for manifest_id in order:
+        manifest = found[manifest_id]
+        entries.append((manifest_id, manifest.get("name") or manifest_id,
+                        "%s: %d setting(s), shaded from %s"
+                        % (manifest.get("name") or manifest_id, len(manifest.get("settings") or []),
+                           manifest.get("blend") or "?")))
+    return entries
+
 
 
 def available():
