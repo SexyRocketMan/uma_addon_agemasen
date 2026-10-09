@@ -1,6 +1,6 @@
 {
   "id": "umashader-0.2.6",
-  "name": "Umashader 0.2.6",
+  "name": "Looper",
   "notes": "Upstream's released library, dropped in **unmodified** (sha256 97f2aa03e5f581398690bc66f856bd408d23490e9dc08e20bb7075a2d07f97e5, 198 532 bytes): appending and copying materials is all this add-on does with it. Measured with shader_manifest_names.py: the collection, the two objects in it, the three material names, the image node names inside both shader materials and the outline group's socket names and identifiers are the same as 0.2.4's, which is why every section but `blend`, the id/name and `settings` is copied from that manifest unchanged. Its `Uma Shader` group has two sockets ours does not: `Toggle World Light Influence` (float, min 0, max 1, default 0.0, after `Toggle If Face`) and `Global Color` (colour, white, after `Light Threshold`) - both rows are in `settings` below, in the interface's own order, so a chooser that reads this manifest draws 20 rows instead of 18. Note that its file carries no actions (ours carries the ear/tail library) and no `Uma Sun` override of ours: nothing but the shading is expected from it. Its outline group is 64 nodes against our 71 and lacks our `Only Depth Offset` and `Value` sockets; the outline names in this manifest are still ours (`UV3`/`UMA_OutlineWidth`), because that half is our code pointing at the group by socket name.",
   "blend": "Umashaders-0.2.6.blend",
   "collection": "Icosphere of Materials Collection",

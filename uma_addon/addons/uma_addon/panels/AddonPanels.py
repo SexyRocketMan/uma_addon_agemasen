@@ -52,8 +52,11 @@ class ModelProcessPanel(BasePanel, bpy.types.Panel):
         prefs = context.preferences.addons[__addon_name__].preferences
         obj_props = getattr(context.active_object, "uma_object", None)
 
+        # The `Import` button that used to sit here was `bpy.ops.mmd_tools.import_model` and nothing else - no
+        # wrapper, no defaults of ours, no filter - so it was a second door onto a dialog mmd_tools already puts in
+        # `File > Import > MikuMikuDance Model (.pmx/.pmd)` and in its own panel. Removed (the user's call): what
+        # is left in this row are this add-on's own two steps.
         row = layout.row()
-        row.operator("mmd_tools.import_model", text="Import")
         row.operator(SetBoneCollections.bl_idname)
         row.operator(RefineBoneStructure.bl_idname)
         row = layout.row(align=True)

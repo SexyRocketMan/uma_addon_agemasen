@@ -1472,7 +1472,14 @@ def _draw_global_block(layout, host, scene_props, manifest=None):
 
 
 def _draw_local_block(layout, root, host, scene_props, manifest=None):
-    """One character's own values for one shader: the master switch, then the same groups."""
+    """One character's own values for one shader: the master switch, then the same groups - once she has any.
+
+    **Nothing but the switch until she has values of her own** (the user's request). Every setting starts at
+    `follows the global`, so a character who has not been given her own values would otherwise draw twelve rows of
+    a padlock, a name and the word `global` - a block of controls that cannot do anything, twice over in a two-shader
+    scene. The rows appear the moment `This uma has her own values` is switched on (or one row's padlock is clicked
+    in a scene where the switch is already on), and they go away again when the last one is put back on the global.
+    """
     shader_id = (manifest or {}).get("id") or TABLE_ID
     overrides = override_count(root)
     row = layout.row(align=True)
@@ -1484,6 +1491,8 @@ def _draw_local_block(layout, root, host, scene_props, manifest=None):
         row.label(text="%d of %d set" % (overrides, len(KEYS)))
     else:
         row.label(text="follows the global")
+        layout.label(text="Nothing of her own to set: switch this on to give her values", icon='INFO')
+        return
     for index, section in enumerate(SECTION_ORDER):
         if _draw_section_header(layout, scene_props, section, index, False, shader_id):
             continue
@@ -1508,14 +1517,14 @@ def draw_shading_control(layout, context):
     # Which shader this scene shades with - one row, drawn from the manifests that are actually installed, so a
     # shader dropped into `operators/shaders/` appears here without a code change. Shading has to run again for it
     # to affect materials, and Hook up re-writes the drivers from its settings table, so those two sentences are in
-    # the tooltip rather than in the panel.
+    # the tooltip rather than in the panel. The label is the shader's `name` - the author's name for it, "Looper" or
+    # "Spork" - because that is how the user asks for one; the version lives in the id and in the menu's tooltip.
     chooser = layout.row(align=True)
     chooser.label(text="Shader")
     if MANIFEST is None:
         chooser.label(text="no readable manifest", icon='ERROR')
     else:
-        chooser.menu(ShaderControlMenu.bl_idname,
-                     text="%s (%d setting(s))" % (MANIFEST.get("name") or TABLE_ID, len(SETTINGS)))
+        chooser.menu(ShaderControlMenu.bl_idname, text=MANIFEST.get("name") or TABLE_ID)
     for problem in MANIFEST_PROBLEMS:
         layout.label(text=problem, icon='ERROR')
 
