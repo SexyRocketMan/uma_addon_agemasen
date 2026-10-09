@@ -351,12 +351,28 @@ def root_object(obj):
 
 
 def shader_nodes(material):
-    """Every group node in `material` that is one of the uma shaders."""
+    """Every group node in `material` that is a uma shader - the one *its own* shader's manifest names.
+
+    The hints come from the manifest the copy was made from, not from the scene's currently selected shader. That
+    distinction is the whole of this function's history: both libraries this add-on shipped until 2.26.0 name their
+    group `Uma Shader`, so asking the *selected* shader's hints happened to work - and hid the bug until a second
+    shader whose group is named differently arrived (Spork's is `Simple Diff + Shaded`). With the selected shader's
+    hints, a character wearing the other one was **invisible to the control**: no panel rows, no drivers, and `hook`
+    walked straight past her. The copy's tag is what answers it (`Shading` writes `SOURCE_PROPERTY` on every copy;
+    that is also `shader_of`'s first answer), and a copy from before the tag existed falls back to the current
+    table's hints, which is what it had before.
+    """
     if material is None or material.node_tree is None:
         return []
+    hints = GROUP_HINTS
+    source = material.get(ShaderManifest.SOURCE_PROPERTY)
+    if source:
+        manifest, _problems = ShaderManifest.load(source)
+        if manifest is not None and manifest.get("group_hints"):
+            hints = tuple(manifest["group_hints"])
     return [node for node in material.node_tree.nodes
             if node.type == 'GROUP' and node.node_tree is not None
-            and any(hint in node.node_tree.name for hint in GROUP_HINTS)]
+            and any(hint in node.node_tree.name for hint in hints)]
 
 
 def is_library_object(obj):

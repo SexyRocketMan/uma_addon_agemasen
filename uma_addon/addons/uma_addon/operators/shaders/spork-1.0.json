@@ -1,0 +1,61 @@
+{
+  "id": "spork-1.0",
+  "name": "Spork",
+  "notes": "The second shader, from Spork's own project file (`Big Samson.blend`), with his permission and on the terms he gave the user: his shader ships complete, including the third-party parts, as long as the credits stay in place. Built by `build_spork_library.py` in `UmaViewer-DevTools`, which appends his `Simple Diff + Shaded` group and four materials into `SporkShaders.blend` and unbinds every image (a library carries slots, not textures - the apply step loads them from the model's folder). Measured in `docs/SHADER_INTERFACE.md` section 6 and re-measured with `shader_manifest_names.py`: the group is 26 nodes, has no subgroups and no image nodes, and offers exactly four sockets - `Diffuse` (colour, default 0.5 grey), `Shaded` (colour, default black), `Shadow Softness` (float, 0.15), `Emission Strength` (float, 0.0). It is a genuinely different mechanism from Looper's: a `Diffuse BSDF` into `Shader to RGB` shaped by `Shadow Softness` through a `Map Range`, mixed with a flat `Shaded` colour - the same idea as 0.2.6's world-light option done smoothly, which is what our own reverted patch borrowed from him (`docs/WORLD_LIGHT_INFLUENCE.md` section 6). **Only two of his four sockets are settings**: `Diffuse` and `Shaded` are *fed by the material's own textures* in every one of his materials (measured: `mmd_base_tex.Color -> Group.Diffuse`, `Image Texture.001.Color -> Group.Shaded` in all six of his wrappers), so a panel row for them would drive a socket whose link overrides it - a control that cannot do anything, which 2.23.2 removed on purpose. `Shadow Softness` and `Emission Strength` are the two he set by hand, and they are the two rows below. Material roles: his template wrapper (`mtl_chr1101_00_hair`, the one with all four texture slots) is renamed `Spork Shader` and is what `parts` map onto; `Spork Eye` is his eyeball material and `Spork Eye Inner` his lit inner eye. His eyes are the one place his file needs somebody else's node: `Spork Eye` reads its UVs through mmd_tools' own `MMDTexUV` group (5 nodes), which travels with the material and is not an unknown dependency - mmd_tools is required by this add-on anyway. Nothing else third-party comes with this library: `SarlShader1.003` (73 nodes) and `Enhancer-Skin.002` (13) are used by exactly one of his materials, `See Thru`, which matches none of this manifest's part substrings, and the eight `.FONDANT_Normals_2.1.0_4.5_*` groups are in his file but no material of his reaches them (measured). His file's only credit text is a note for a different model (Lumine), so the credits for this shader are the ones in this note and in `docs/SPORK_RIG.md`. The outline is ours, both halves: `outline.blend` names `Umashaders.blend`, so the shell's group *and* its material come out of that file (2.24.0 did the group, 2.26.0 the material), and `Uma Outline Material` is also in this library's collection so that a manifest resolving it locally would still find ours. **One caveat to read before asking a question about eyes**: a plain UmaViewer export names exactly one eye material (`mtl_chr1001_00_eye` in the reference model), so `eye_inner` - matched on `eye inner`/`eye_inner` - fires only for a model that has such a material. His own project does; the exports this add-on is for may not.",
+  "blend": "SporkShaders.blend",
+  "collection": "Icosphere of Materials Collection",
+  "materials": {
+    "default": "Spork Shader",
+    "eye": "Spork Eye",
+    "eye_inner": "Spork Eye Inner",
+    "outline": "Uma Outline Material"
+  },
+  "source_image_nodes": ["mmd_base_tex", "Image Texture"],
+  "parts": [
+    {"id": "eye_inner", "match": ["eye inner", "eye_inner"], "material": "eye_inner"},
+    {"id": "bdy", "match": ["bdy", "body"], "material": "default"},
+    {"id": "hair", "match": ["hair"], "material": "default"},
+    {"id": "face", "match": ["face", "mayu"], "material": "default"},
+    {"id": "tail", "match": ["tail"], "material": "default"},
+    {"id": "eye", "match": ["eye"], "material": "eye"}
+  ],
+  "textures": {
+    "default": [
+      {"node": "mmd_base_tex", "source": true, "colorspace": "sRGB"},
+      {"node": "Image Texture", "replace": ["diff", "ctrl"], "colorspace": "Non-Color", "keywords": ["ctrl"]},
+      {"node": "Image Texture.001", "replace": ["diff", "shad_c"], "colorspace": "sRGB"},
+      {"node": "Image Texture.002", "replace": ["diff", "base"], "colorspace": "Non-Color", "keywords": ["base"]}
+    ],
+    "eye": [
+      {"node": "mmd_base_tex", "source": true, "colorspace": "sRGB"},
+      {"node": "Image Texture", "replace": ["eye0", "eyehi00"], "colorspace": "Non-Color", "optional": true},
+      {"node": "Image Texture.001", "replace": ["eye0", "eyehi01"], "colorspace": "Non-Color", "optional": true},
+      {"node": "Image Texture.002", "replace": ["eye0", "eyehi02"], "colorspace": "Non-Color", "optional": true}
+    ],
+    "eye_inner": [
+      {"node": "mmd_base_tex", "source": true, "colorspace": "sRGB"},
+      {"node": "Image Texture", "replace": ["diff", "base"], "colorspace": "Non-Color", "keywords": ["base"]},
+      {"node": "Image Texture.001", "replace": ["diff", "shad_c"], "colorspace": "sRGB"}
+    ]
+  },
+  "outline": {
+    "group": "Uma Outlines",
+    "modifier": "Uma Outlines",
+    "material": "outline",
+    "blend": "Umashaders.blend",
+    "inputs": {"depth_offset": {"name": "Depth Offset", "identifier": "Input_15", "value": 0.1}, "camera": {"name": "Camera", "identifier": "Input_13"}, "material": {"name": "Outline Material", "identifier": "Input_18"}},
+    "source_attribute": "UV3",
+    "width_attribute": "UMA_OutlineWidth",
+    "width": 0.25
+  },
+  "sun": "Uma Sun [DO NOT DELETE]",
+  "group_hints": ["Simple Diff + Shaded"],
+  "settings": [
+    {"key": "spork_shadow_softness", "input": "Shadow Softness", "section": "Shadow Softness", "kind": "number",
+     "default": 0.15, "min": 0.0, "max": 1.0, "soft_min": 0.0, "soft_max": 1.0,
+     "description": "How far the lit side fades into the shaded side. His own default is 0.15; 0 is a hard two-tone split and 1 is the whole band"},
+    {"key": "spork_emission_strength", "input": "Emission Strength", "section": "Emission", "kind": "number",
+     "default": 0.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+     "description": "Glow added on top of the shaded look, off at 0.0 as his own files ship it"}
+  ]
+}

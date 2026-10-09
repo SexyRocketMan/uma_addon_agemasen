@@ -383,6 +383,37 @@ def ensure_library(manifest, blend_file, context):
     return collection, masters, notes
 
 
+def ensure_material(blend_file, material_name, manifest_id):
+    """A material out of a named library, tagged so the *same* one is found on the next run.
+
+    The outline is the reason this exists. `outline.blend` names the file a manifest's shell comes out of, and since
+    2.25.0 that is both halves of it: the node group (through `ensure_node_group`) *and* the material it paints with.
+    Until then only the group came from that file and the material came from the shader's own `blend` - so a manifest
+    naming our outline file still produced upstream's line look, measured in `shader_outline_material_check.py`.
+
+    The tag is what makes it idempotent: the two libraries name their outline material the same, so asking by name
+    would hand back whichever was there first (`library_masters` says the same about the master materials, and
+    `ensure_node_group` about the groups). Blender renames the second append to `Uma Outline Material.001`, which is
+    why the lookup accepts the numeric suffix rather than the bare name.
+    """
+    for material in bpy.data.materials:
+        if material.get(ShaderManifest.SOURCE_PROPERTY) != manifest_id:
+            continue
+        if material.name == material_name or material.name.startswith(material_name + "."):
+            return material
+    if not material_name:
+        return None
+    before = set(bpy.data.materials)
+    with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
+        if material_name not in data_from.materials:
+            return None
+        data_to.materials.append(material_name)
+    fresh = [material for material in bpy.data.materials if material not in before]
+    for material in fresh:
+        material[ShaderManifest.SOURCE_PROPERTY] = manifest_id
+    return fresh[0] if fresh else None
+
+
 def ensure_node_group(blend_file, group_name, manifest_id, adopt=True):
     """The shader file's own copy of a node group, tagged like the collection, or None when the file has none.
 
@@ -529,10 +560,27 @@ class ApplyShader(bpy.types.Operator):
         # there (it reports instead of raising, so nothing looked broken). Naming `Umashaders.blend` here gives every
         # shader our outline - and that file ships anyway, being the action library. `adopt=False` because the file
         # is authoritative: an untagged group of the same name is NOT the one this manifest asked for.
+        #
+        # The shell is two haloes of the same decision, and since 2.25.0 the material follows the group: the modifier
+        # is ours *and* it paints with the material from that same file. Before that the material came from the
+        # shader's own library, so a manifest naming our outline file still drew upstream's line - measured, and the
+        # whole of `docs/OUTLINES.md`'s subject matter. `outline_masters` is the library's own `{role: material}`
+        # with that one role replaced.
         outline = manifest.get("outline") or {}
         modifier_name = outline.get("modifier")
         group_name = outline.get("group")
         outline_blend = os.path.join(os.path.dirname(__file__), outline["blend"]) if outline.get("blend") else ""
+        outline_masters = masters
+        if outline_blend and outline.get("material"):
+            outline_material = ensure_material(outline_blend,
+                                               (manifest.get("materials") or {}).get(outline["material"]),
+                                               manifest["id"])
+            if outline_material is not None:
+                outline_masters = dict(masters)
+                outline_masters[outline["material"]] = outline_material
+            else:
+                print(f"[uma_addon] {outline['blend']} has no {outline.get('material')!r} material, so the shell "
+                      "keeps the one this shader's own library carries")
         if outline and modifier_name and group_name:
             if modifier_name not in obj.modifiers:
                 node_group = ensure_node_group(outline_blend or blend_file, group_name, manifest["id"],
@@ -551,7 +599,7 @@ class ApplyShader(bpy.types.Operator):
                 if depth:
                     set_modifier_input(geom_mod, depth["name"], depth["identifier"], depth["value"])
                 if fix_outlines:
-                    contain_outline(self, geom_mod, obj, blend_file, manifest, masters)
+                    contain_outline(self, geom_mod, obj, blend_file, manifest, outline_masters)
 
         # The central shading control: one property per setting on the sun empty, one override per character on
         # its root empty, and a driver per setting per copy resolving override -> global. Hooked up here so a
