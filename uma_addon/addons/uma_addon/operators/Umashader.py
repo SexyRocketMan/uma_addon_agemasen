@@ -1,15 +1,26 @@
-# The Shading operator, as upstream ships it, with two things added. One is unavoidable: the write of the
+# The Shading operator, as upstream ships it, with three things added. One is unavoidable: the write of the
 # outline modifier's "Depth Offset" at the end, where upstream does `geom_mod["Input_15"] = 0.1` - an ID
 # property on the modifier, which Blender 5.2 no longer uses for node-group modifier inputs (4.2 through 5.1
 # still do). `set_modifier_input()` picks the route the running Blender has and reports instead of raising
-# when neither works. The other is optional: it runs only when the scene's "Contain the outline" checkbox in
+# when neither works. Another is optional: it runs only when the scene's "Contain the outline" checkbox in
 # the UMA panel is ticked, and `contain_outline()` below is the whole of it.
+#
+# The third is that none of the names this operator used to carry in the code are here any more: the shader
+# file, the collection to append, the part substrings, the two shader materials, the texture node names and
+# filename substitutions, the per-part toggles and the outline's own names all come from the manifest of the
+# shader being applied (`operators/shaders/<id>.json`, read by `operators/ShaderManifest.py`). Applying a
+# second shader is then that file, not an edit here. The behaviour is meant to be *identical* to the shipped
+# 2.18.0 one and is measured to be so (`docs/SHADER_INTERFACE.md` section 4, step 1, `shader_apply_fingerprint.py`);
+# the three deliberate differences are that a missing manifest is reported instead of raising, that an image
+# node with no image is reported instead of failing on `img_node.image.filepath`, and that a shader group
+# without a toggle socket is left alone instead of raising a KeyError.
 
 import bpy
 import os
 from ..config import __addon_name__
 
 from ..utils.Utils import find_file_by_keywords
+from . import ShaderManifest
 
 # The central shading control (one place to set the look, per-character overrides) lives in its own file so it can
 # be removed on its own; the panel still draws and Shading still runs without it. Same for the face-normal step.
@@ -74,6 +85,86 @@ def _outline_socket_candidates(modifier, name, identifier):
     return candidates
 
 
+# --- the shader manifest -------------------------------------------------------------------------------
+#
+# The shader being applied, read once: a manifest is data shipped beside its .blend, so there is nothing to
+# re-read at run time, and `execute` reports the problems rather than raising when it is missing.
+
+MANIFEST, MANIFEST_PROBLEMS = ShaderManifest.active()
+MANIFEST_OUTLINE = (MANIFEST or {}).get("outline") or {}
+OUTLINE_ATTRIBUTE = MANIFEST_OUTLINE.get("source_attribute", "")
+OUTLINE_WIDTH_ATTRIBUTE = MANIFEST_OUTLINE.get("width_attribute", "")
+OUTLINE_WIDTH = MANIFEST_OUTLINE.get("width", 0.0)
+
+
+def part_rule(manifest, material_name):
+    """The part a material belongs to: the manifest's rules in order, first substring that matches wins.
+
+    This is the if/elif chain upstream wrote, as data - `'bdy' in name or 'body' in name` first, `'eye'` last -
+    and a material matching none of them is skipped, exactly as before. The rule's `id` is also what the texture
+    keyword search is given (`find_file_by_keywords(tex_dir, [part_type, "ctrl"])`).
+    """
+    lowered = material_name.lower()
+    for rule in manifest.get("parts") or []:
+        if any(needle in lowered for needle in rule.get("match") or []):
+            return rule
+    return None
+
+
+def set_group_input(nodes, spec):
+    """Set one input on every group node whose node tree name contains `spec["group"]`.
+
+    Upstream reached straight into `n.inputs["Emmission Toggle"]` for the emission texture and
+    `n.inputs["Toggle If Face [0=Off,1=On]"]` for faces, which raises a KeyError on a material whose group does
+    not offer that socket. The socket is looked up instead, so an option a shader does not have is simply not
+    set - which is what makes a shader file swapable without touching this file.
+    """
+    changed = 0
+    for node in nodes:
+        if node.type != 'GROUP' or node.node_tree is None:
+            continue
+        if spec.get("group") and spec["group"] not in node.node_tree.name:
+            continue
+        socket = node.inputs.get(spec.get("input"))
+        if socket is None:
+            continue
+        socket.default_value = spec["value"]
+        changed += 1
+    return changed
+
+
+def bind_texture(nodes, rule, tex_dir, tex_diff, source_path, part_id):
+    """Put one texture where the manifest says it goes, and return whether a node was given an image.
+
+    `rule` is one entry of a recipe: a node name, and either `"source": true` (the image the material already
+    had) or a two-entry `replace` applied to that image's filename - `"diff"` -> `"ctrl"` and the like - plus
+    the colour space it wants. `keywords` adds the folder search upstream did when the substituted name was not
+    there (`find_file_by_keywords(tex_dir, [part, "ctrl"])`), and `optional` is for the eye highlights, which
+    upstream skipped in silence where the part textures print the name they looked for.
+    """
+    node = nodes.get(rule.get("node"))
+    if node is None:
+        return False
+    if rule.get("source"):
+        path = source_path
+    else:
+        find, replace = rule["replace"]
+        path = os.path.join(tex_dir, tex_diff.replace(find, replace))
+        if not os.path.exists(path) and rule.get("keywords"):
+            path = find_file_by_keywords(tex_dir, [part_id] + list(rule["keywords"]))
+        if not path or not os.path.exists(path):
+            if not rule.get("optional"):
+                print(f"{os.path.join(tex_dir, tex_diff.replace(find, replace))} not found")
+            return False
+
+    node.image = bpy.data.images.load(path, check_existing=True)
+    if node.image is not None and rule.get("colorspace"):
+        node.image.colorspace_settings.name = rule["colorspace"]
+    for spec in rule.get("set_inputs") or []:
+        set_group_input(nodes, spec)
+    return True
+
+
 # --- optional: contain the outline ---------------------------------------------------------------------
 #
 # Off by default, so shading behaves exactly as upstream unless it is switched on. What it is for:
@@ -95,11 +186,10 @@ def _outline_socket_candidates(modifier, name, identifier):
 # correct one - the correct fix is the exporter writing the real set (docs/OUTLINES.md).
 
 #: The outline normal set the group reads by default, and what it is pointed at instead when that channel is
-#: not an outline set.
-OUTLINE_ATTRIBUTE = "UV3"
-OUTLINE_WIDTH_ATTRIBUTE = "UMA_OutlineWidth"
-#: The width written into it. 0.25 is the smallest value measured to stop the shell covering the model.
-OUTLINE_WIDTH = 0.25
+#: not an outline set - `outline.source_attribute` and `outline.width_attribute` in the manifest, read above.
+#: `OUTLINE_WIDTH` is the width written into it: 0.25 is the smallest value measured to stop the shell covering
+#: the model. The 0.25 *coverage* below is a different number and stayed in the code, because it is a measured
+#: threshold rather than a name the shader file decides.
 
 
 def outline_width_coverage(mesh_obj, attribute_name=OUTLINE_ATTRIBUTE):
@@ -145,14 +235,21 @@ def point_outline_group_at(group, attribute_name, depth=0, limit=4):
     return changed
 
 
-def contain_outline(operator, modifier, mesh_obj, blend_file):
-    """The optional containment described above: camera, width, material. Reports what it did."""
+def contain_outline(operator, modifier, mesh_obj, blend_file, manifest):
+    """The optional containment described above: camera, width, material. Reports what it did.
+
+    Every name it writes through comes from `manifest["outline"]` - the socket names with the legacy identifiers
+    Blender 4.2-5.1 needs, the two attributes, and the outline material's own name.
+    """
+    outline = (manifest or {}).get("outline") or {}
+    inputs = outline.get("inputs") or {}
     group = getattr(modifier, "node_group", None)
 
     # 1. the camera the right_offset term measures from
     camera = bpy.context.scene.camera
+    spec = inputs.get("camera") or {}
     if camera is not None:
-        if set_modifier_input(modifier, "Camera", "Input_13", camera):
+        if spec and set_modifier_input(modifier, spec["name"], spec["identifier"], camera):
             print(f"[uma_addon] outline camera set to {camera.name!r}: without it the outline offsets away "
                   f"from the model's own origin instead of along the view ray, which is what makes it huge")
     else:
@@ -160,41 +257,46 @@ def contain_outline(operator, modifier, mesh_obj, blend_file):
               "set a camera and run Shading again for a sane outline size")
 
     # 2. a width the group can actually use
-    if group is not None:
-        coverage = outline_width_coverage(mesh_obj)
+    source_attribute = outline.get("source_attribute") or ""
+    width_attribute = outline.get("width_attribute") or ""
+    width = outline.get("width", 0.0)
+    if group is not None and source_attribute and width_attribute:
+        coverage = outline_width_coverage(mesh_obj, source_attribute)
         if coverage is not None and coverage >= 0.25:
-            point_outline_group_at(group, OUTLINE_ATTRIBUTE)
-            print(f"[uma_addon] {OUTLINE_ATTRIBUTE} carries a usable outline width "
+            point_outline_group_at(group, source_attribute)
+            print(f"[uma_addon] {source_attribute} carries a usable outline width "
                   f"({coverage:.0%} of the mesh), left as it is")
         else:
-            attribute = mesh_obj.data.attributes.get(OUTLINE_WIDTH_ATTRIBUTE)
+            attribute = mesh_obj.data.attributes.get(width_attribute)
             if attribute is None:
-                attribute = mesh_obj.data.attributes.new(OUTLINE_WIDTH_ATTRIBUTE, 'FLOAT_VECTOR', 'CORNER')
-            attribute.data.foreach_set("vector", [0.0, OUTLINE_WIDTH, 0.0] * len(mesh_obj.data.loops))
+                attribute = mesh_obj.data.attributes.new(width_attribute, 'FLOAT_VECTOR', 'CORNER')
+            attribute.data.foreach_set("vector", [0.0, width, 0.0] * len(mesh_obj.data.loops))
             mesh_obj.data.update()
-            point_outline_group_at(group, OUTLINE_WIDTH_ATTRIBUTE)
+            point_outline_group_at(group, width_attribute)
             if coverage is None:
-                print(f"[uma_addon] {mesh_obj.name} has no {OUTLINE_ATTRIBUTE} outline normal set; gave the "
-                      f"shell a neutral width of {OUTLINE_WIDTH} instead")
+                print(f"[uma_addon] {mesh_obj.name} has no {source_attribute} outline normal set; gave the "
+                      f"shell a neutral width of {width} instead")
             else:
-                print(f"[uma_addon] {OUTLINE_ATTRIBUTE}'s green channel is zero over {(1 - coverage):.0%} of "
+                print(f"[uma_addon] {source_attribute}'s green channel is zero over {(1 - coverage):.0%} of "
                       f"{mesh_obj.name} (an Agemasen export packs the vertex colour there, not an outline "
-                      f"normal set); gave the shell a neutral width of {OUTLINE_WIDTH} and left "
-                      f"{OUTLINE_ATTRIBUTE} alone")
+                      f"normal set); gave the shell a neutral width of {width} and left "
+                      f"{source_attribute} alone")
 
     # 3. the shell's own material, so it reads as a line rather than the character's shading flipped
-    material = bpy.data.materials.get("Uma Outline Material")
-    if material is None:
+    material_name = (manifest.get("materials") or {}).get(outline.get("material"))
+    material = bpy.data.materials.get(material_name) if material_name else None
+    if material is None and material_name:
         with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
-            if "Uma Outline Material" in data_from.materials:
-                data_to.materials.append("Uma Outline Material")
-        material = bpy.data.materials.get("Uma Outline Material")
-    if material is not None:
+            if material_name in data_from.materials:
+                data_to.materials.append(material_name)
+        material = bpy.data.materials.get(material_name)
+    material_input = inputs.get("material") or {}
+    if material is not None and material_input:
         operator.report({'INFO'}, "outline camera, width and material set")
-        if set_modifier_input(modifier, "Outline Material", "Input_18", material):
+        if set_modifier_input(modifier, material_input["name"], material_input["identifier"], material):
             print(f"[uma_addon] outline shell uses {material.name!r}")
     else:
-        print("[uma_addon] Umashaders.blend has no 'Uma Outline Material', so the shell keeps the "
+        print(f"[uma_addon] {manifest.get('blend')} has no {material_name!r}, so the shell keeps the "
               "character's own material")
 
 
@@ -217,8 +319,19 @@ class ApplyShader(bpy.types.Operator):
         # the first version of this toggle ended up invisible in the UI.
         fix_outlines = bool(getattr(getattr(context.scene, "uma_scene", None), "fix_outlines", False))
         
-        # 定位同文件夹下的 Umashaders.blend
-        blend_file = os.path.join(os.path.dirname(__file__), "Umashaders.blend")
+        # The shader this run applies, and everything it is made of - the .blend, the collection to append, the
+        # part rules, the materials, the texture recipes, the per-part toggles and the outline. A manifest that
+        # is missing cannot be worked around, so it cancels; one that is readable but incomplete is reported and
+        # the run carries on, applying every part of the look that *was* described.
+        manifest, problems = ShaderManifest.active()
+        if manifest is None:
+            self.report({'ERROR'}, "no shader manifest: %s" % "; ".join(problems or ["unknown reason"]))
+            return {'CANCELLED'}
+        for problem in problems:
+            print(f"[uma_addon] the manifest of {manifest.get('id')}: {problem}")
+
+        # 定位 manifest 指定的 shader 库文件
+        blend_file = os.path.join(os.path.dirname(__file__), manifest["blend"])
 
         if not os.path.exists(blend_file):
             self.report({'ERROR'}, f"{blend_file} not found")
@@ -228,7 +341,7 @@ class ApplyShader(bpy.types.Operator):
         col_name = None
         with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
             for name in data_from.collections:
-                if "Icosphere" in name:
+                if manifest["collection"] in name:
                     col_name = name
                     break
             if col_name:
@@ -236,7 +349,7 @@ class ApplyShader(bpy.types.Operator):
                 if col_name not in bpy.data.collections:
                     data_to.collections.append(col_name)
             else:
-                self.report({'ERROR'}, "Icosphere of Materials collection not found in Umashaders.blend")
+                self.report({'ERROR'}, "%s not found in %s" % (manifest["collection"], manifest["blend"]))
                 return {'CANCELLED'}
         
         # 链接到当前场景的视图层
@@ -245,47 +358,45 @@ class ApplyShader(bpy.types.Operator):
             if coll.name not in context.scene.collection.children:
                 context.scene.collection.children.link(coll)
         else:
-            self.report({'ERROR'}, "Failed to load Icosphere of Materials collection")
+            self.report({'ERROR'}, "Failed to load %s" % manifest["collection"])
             return {'CANCELLED'}
 
         # 遍历选中模型的材质槽
+        source_nodes = manifest.get("source_image_nodes") or []
+        recipes = manifest.get("textures") or {}
         for slot in obj.material_slots:
             old_mat = slot.material
             if not old_mat: 
                 continue
             # 判断部位类型
-            part_type = None
-            mat_name_lower = old_mat.name.lower()
-            if 'bdy' in mat_name_lower or 'body' in mat_name_lower: part_type = 'bdy'
-            elif 'hair' in mat_name_lower: part_type = 'hair'
-            elif 'face' in mat_name_lower or 'mayu' in mat_name_lower: part_type = 'face'
-            elif 'tail' in mat_name_lower: part_type = 'tail'
-            elif 'eye' in mat_name_lower: part_type = 'eye'
-            if not part_type:
+            rule = part_rule(manifest, old_mat.name)
+            if rule is None:
                 continue
+            part_type = rule["id"]
             
             # 推导 Texture2D 贴图名
             if old_mat.node_tree:
-                # 寻找原有材质里的图像节点来推导
-                img_node = next((n for n in old_mat.node_tree.nodes if n.name == 'mmd_base_tex' or n.name == 'Image Texture' and n.image), None)
-                if img_node:
-                    img_path = bpy.path.abspath(img_node.image.filepath)
-                    tex_dir = os.path.dirname(img_path)
-                    tex_diff = os.path.basename(img_path)
-                else:
+                # 寻找原有材质里的图像节点来推导: one of the manifest's source node names, with an image if
+                # there is one (a node carrying no image has no path to derive anything from)
+                img_node = next((n for n in old_mat.node_tree.nodes if n.name in source_nodes and n.image), None) \
+                    or next((n for n in old_mat.node_tree.nodes if n.name in source_nodes), None)
+                if img_node is None or img_node.image is None:
                     self.report({'ERROR'}, f"Cannot find a valid image node in material {old_mat.name} to determine texture path")
                     return {'CANCELLED'}
+                img_path = bpy.path.abspath(img_node.image.filepath)
+                tex_dir = os.path.dirname(img_path)
+                tex_diff = os.path.basename(img_path)
 
-                # 找到 Uma Shader
-                target_shader_name = "Uma Eyes" if part_type == 'eye' else "Uma Shader"
-                uma_shader = bpy.data.materials.get(target_shader_name)
+                # 找到该部位对应的 shader 材质
+                target_shader_name = (manifest.get("materials") or {}).get(rule.get("material"))
+                uma_shader = bpy.data.materials.get(target_shader_name) if target_shader_name else None
                 if not uma_shader:
                     with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
                         if target_shader_name in data_from.materials:
                             data_to.materials.append(target_shader_name)
                             uma_shader = bpy.data.materials.get(target_shader_name)
                         else:
-                            self.report({'ERROR'}, f"{target_shader_name} not found in Umashaders.blend")
+                            self.report({'ERROR'}, f"{target_shader_name} not found in {manifest['blend']}")
                             return {'CANCELLED'}
 
                 # 对材质进行深拷贝并替换
@@ -297,96 +408,39 @@ class ApplyShader(bpy.types.Operator):
                 slot.material = new_mat
                 nodes = new_mat.node_tree.nodes
 
-                if part_type == 'eye':
-                    for i, suffix in enumerate([None, "eyehi00", "eyehi01", "eyehi02"]):
-                        node_name = "Image Texture" if i == 0 else f"Image Texture.{i:03d}"
-                        node = nodes.get(node_name)
-                        if node:
-                            if i == 0:
-                                node.image = bpy.data.images.load(img_path, check_existing=True)
-                                node.image.colorspace_settings.name = 'sRGB'
-                            else:
-                                p = os.path.join(tex_dir, tex_diff.replace("eye0", suffix))
-                                if os.path.exists(p):
-                                    node.image = bpy.data.images.load(p, check_existing=True)
-                                    node.image.colorspace_settings.name = 'Non-Color'
+                # 贴图：该部位自己的配方，没有就用手册里的 default
+                recipe = recipes.get(part_type) or recipes.get("default") or []
+                for texture_rule in recipe:
+                    bind_texture(nodes, texture_rule, tex_dir, tex_diff, img_path, part_type)
 
-                else:
-                    node = nodes.get("Image Texture")
-                    if node:
-                        node.image = bpy.data.images.load(img_path, check_existing=True)
-                        node.image.colorspace_settings.name = 'sRGB'
+                # 部位自己的开关（脸部的 Toggle If Face，等等）
+                for spec in manifest.get("part_inputs") or []:
+                    if spec.get("part") == part_type:
+                        set_group_input(nodes, spec)
 
-                    node = nodes.get("Image Texture.001")
-                    if node:
-                        img_path = os.path.join(tex_dir, tex_diff.replace("diff", "ctrl"))
-                        if not os.path.exists(img_path):
-                            img_path = find_file_by_keywords(tex_dir, [part_type, 'ctrl'])  
-                        if img_path and os.path.exists(img_path):
-                            node.image = bpy.data.images.load(img_path, check_existing=True)
-                            node.image.colorspace_settings.name = 'Non-Color'
-                        else:
-                            img_path = os.path.join(tex_dir, tex_diff.replace("diff", "ctrl"))
-                            print(f"{img_path} not found")
+        # 为选中模型加上 shader 手册里说的那个 outline 几何节点
+        outline = manifest.get("outline") or {}
+        modifier_name = outline.get("modifier")
+        group_name = outline.get("group")
+        if outline and modifier_name and group_name:
+            if modifier_name not in obj.modifiers:
+                if group_name not in bpy.data.node_groups:
+                    with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
+                        if group_name in data_from.node_groups:
+                            data_to.node_groups.append(group_name)
+                node_group = bpy.data.node_groups.get(group_name)
+                if node_group:
+                    geom_mod = obj.modifiers.new(name=modifier_name, type='NODES')
+                    geom_mod.node_group = node_group
 
-                    node = nodes.get("Image Texture.002")
-                    if node:
-                        img_path = os.path.join(tex_dir, tex_diff.replace("diff", "shad_c"))
-                        if os.path.exists(img_path):
-                            img = bpy.data.images.load(img_path, check_existing=True)
-                            node.image = img
-                            node.image.colorspace_settings.name = 'sRGB'
-                        else:
-                            print(f"{img_path} not found")
-
-                    node = nodes.get("Image Texture.003")
-                    if node:
-                        img_path = os.path.join(tex_dir, tex_diff.replace("diff", "base"))
-                        if not os.path.exists(img_path):
-                            img_path = find_file_by_keywords(tex_dir, [part_type, 'base'])  
-                        if img_path and os.path.exists(img_path):
-                            node.image = bpy.data.images.load(img_path, check_existing=True)
-                            node.image.colorspace_settings.name = 'Non-Color'
-                        else:
-                            img_path = os.path.join(tex_dir, tex_diff.replace("diff", "base"))
-                            print(f"{img_path} not found")
-
-                    node = nodes.get("Image Texture.004")
-                    if node:
-                        img_path = os.path.join(tex_dir, tex_diff.replace("diff", "emi"))
-                        if os.path.exists(img_path):
-                            img = bpy.data.images.load(img_path, check_existing=True)
-                            node.image = img
-                            node.image.colorspace_settings.name = 'Non-Color'
-
-                            for n in nodes:
-                                if n.type == 'GROUP' and n.node_tree and "Uma Shader" in n.node_tree.name:
-                                    n.inputs["Emmission Toggle"].default_value = 1
-                        else:
-                            print(f"{img_path} not found")
-
-                    if part_type == 'face':
-                        for n in nodes:
-                            if n.type == 'GROUP' and n.node_tree and "Uma Shader" in n.node_tree.name:
-                                n.inputs["Toggle If Face [0=Off,1=On]"].default_value = 1
-
-        # 为选中模型加上 Uma Outlines 几何节点
-        if "Uma Outlines" not in obj.modifiers:
-            if "Uma Outlines" not in bpy.data.node_groups:
-                with bpy.data.libraries.load(blend_file, link=False) as (data_from, data_to):
-                    if "Uma Outlines" in data_from.node_groups:
-                        data_to.node_groups.append("Uma Outlines")
-            node_group = bpy.data.node_groups.get("Uma Outlines")
-            if node_group:
-                geom_mod = obj.modifiers.new(name="Uma Outlines", type='NODES')
-                geom_mod.node_group = node_group
-
-        geom_mod = obj.modifiers.get("Uma Outlines")
-        if geom_mod is not None:
-            # was: geom_mod["Input_15"] = 0.1
-            set_modifier_input(geom_mod, "Depth Offset", "Input_15", 0.1)
-            if fix_outlines:
-                contain_outline(self, geom_mod, obj, blend_file)
+            geom_mod = obj.modifiers.get(modifier_name)
+            if geom_mod is not None:
+                # was: geom_mod["Input_15"] = 0.1
+                depth = (outline.get("inputs") or {}).get("depth_offset") or {}
+                if depth:
+                    set_modifier_input(geom_mod, depth["name"], depth["identifier"], depth["value"])
+                if fix_outlines:
+                    contain_outline(self, geom_mod, obj, blend_file, manifest)
 
         # The central shading control: one property per setting on the sun empty, one override per character on
         # its root empty, and a driver per setting per copy resolving override -> global. Hooked up here so a
