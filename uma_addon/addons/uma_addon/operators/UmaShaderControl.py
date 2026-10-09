@@ -406,7 +406,12 @@ def ensure_properties(obj, keys=None, seed=None, inherit=False):
 
     `keys=None` rather than `keys=KEYS` on purpose: a default argument is bound when the function is *defined*, so
     a table that a scene can change would be frozen into it.
+
+    `obj=None` is a scene with no sun yet - there is nothing to create the settings on, and the caller has nothing
+    to do about it either, so this returns an empty list rather than raising (see `reorder_properties`).
     """
+    if obj is None:
+        return []
     keys = KEYS if keys is None else keys
     created = []
     for key in keys:
@@ -456,8 +461,13 @@ def reorder_properties(obj, keys=None):
     (measured: a socket read 0.42 before, 0.42 after), which makes re-ordering a file saved by an earlier build a
     safe one-off.
 
-    Returns the keys it moved, or an empty tuple when they were already in order.
+    Returns the keys it moved, or an empty tuple when they were already in order - and `()` for `None`, which is
+    the state a scene is in before its first Shading run: the sun these settings live on arrives with the shader
+    library, so "there is no host yet" is normal rather than a mistake, and a caller that forgets to check must not
+    take the operator down with an `AttributeError` (which is exactly what choosing a shader in a fresh scene did).
     """
+    if obj is None:
+        return ()
     keys = KEYS if keys is None else keys
     ours = [name for name in obj.keys() if name in SETTING_BY_KEY]
     wanted = [key for key in keys if key in ours]
@@ -817,14 +827,25 @@ class ShaderControlChoose(Operator):
         previous = getattr(scene_props, "shader", "") or ShaderManifest.DEFAULT_ID
         scene_props.shader = self.shader
         use_table(context)
-        was = reorder_properties(sun_object(context))    # nothing to do on a fresh scene; harmless otherwise
+
+        # Choosing a shader in a scene that has not been shaded yet is the *normal* order (open a file, pick the
+        # shader, then shade), and there is no sun to reorder then: the sun arrives with the library `Shading`
+        # appends. Asking `reorder_properties` for it anyway was the bug the user hit -
+        # `AttributeError: 'NoneType' object has no attribute 'keys'` - and the `was is None` test below it could
+        # never fire, because this function returns `()` or a tuple of keys and never None.
+        sun = sun_object(context)
+        moved = reorder_properties(sun) if sun is not None else ()
+
         self.report({'INFO'}, "%s: %d setting(s). Shading applies it to the next character you shade; 'Hook up' "
                               "re-writes the drivers from its table" % (describe(), len(SETTINGS)))
         if previous != TABLE_ID:
             print("[uma_addon] %s: shading is now %s (was %s); rows and drivers follow it from here, and the "
                   "collection and sun of the other shader stay in the scene" % (TAG, TABLE_ID, previous))
-        if was is None:
-            print("[uma_addon] %s: no sun empty in this scene yet, so run Shading on a character" % TAG)
+        if sun is None:
+            print("[uma_addon] %s: no '%s' empty in this scene yet - Shading brings the library, and the sun with "
+                  "it" % (TAG, SUN_NAME))
+        elif moved:
+            print("[uma_addon] %s: the sun's settings were moved into %s's order" % (TAG, TABLE_ID))
         return {'FINISHED'}
 
 

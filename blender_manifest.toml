@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "uma_addon"
-version = "2.21.0"
+version = "2.21.1"
 name = "UMA Addon (Agemasen edition)"
 tagline = "UmaViewer model workflow - Pumpkin Rig chains and one-control shading, Agemasen edition (Blender 4.2-5.2)"
 maintainer = "小微在线上, RemoveChestnut"
