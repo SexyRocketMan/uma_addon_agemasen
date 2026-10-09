@@ -1,0 +1,97 @@
+{
+  "id": "umashader-0.2.6",
+  "name": "Umashader 0.2.6",
+  "notes": "Upstream's released library, dropped in **unmodified** (sha256 97f2aa03e5f581398690bc66f856bd408d23490e9dc08e20bb7075a2d07f97e5, 198 532 bytes): appending and copying materials is all this add-on does with it. Measured with shader_manifest_names.py: the collection, the two objects in it, the three material names, the image node names inside both shader materials and the outline group's socket names and identifiers are the same as 0.2.4's, which is why every section but `blend`, the id/name and `settings` is copied from that manifest unchanged. Its `Uma Shader` group has two sockets ours does not: `Toggle World Light Influence` (float, min 0, max 1, default 0.0, after `Toggle If Face`) and `Global Color` (colour, white, after `Light Threshold`) - both rows are in `settings` below, in the interface's own order, so a chooser that reads this manifest draws 20 rows instead of 18. Note that its file carries no actions (ours carries the ear/tail library) and no `Uma Sun` override of ours: nothing but the shading is expected from it. Its outline group is 64 nodes against our 71 and lacks our `Only Depth Offset` and `Value` sockets; the outline names in this manifest are still ours (`UV3`/`UMA_OutlineWidth`), because that half is our code pointing at the group by socket name.",
+  "blend": "Umashaders-0.2.6.blend",
+  "collection": "Icosphere of Materials Collection",
+  "materials": {
+    "default": "Uma Shader",
+    "eye": "Uma Eyes",
+    "outline": "Uma Outline Material"
+  },
+  "source_image_nodes": [
+    "mmd_base_tex",
+    "Image Texture"
+  ],
+  "parts": [
+    {"id": "bdy", "match": ["bdy", "body"], "material": "default"},
+    {"id": "hair", "match": ["hair"], "material": "default"},
+    {"id": "face", "match": ["face", "mayu"], "material": "default"},
+    {"id": "tail", "match": ["tail"], "material": "default"},
+    {"id": "eye", "match": ["eye"], "material": "eye"}
+  ],
+  "textures": {
+    "default": [
+      {"node": "Image Texture", "source": true, "colorspace": "sRGB"},
+      {"node": "Image Texture.001", "replace": ["diff", "ctrl"], "colorspace": "Non-Color", "keywords": ["ctrl"]},
+      {"node": "Image Texture.002", "replace": ["diff", "shad_c"], "colorspace": "sRGB"},
+      {"node": "Image Texture.003", "replace": ["diff", "base"], "colorspace": "Non-Color", "keywords": ["base"]},
+      {"node": "Image Texture.004", "replace": ["diff", "emi"], "colorspace": "Non-Color", "set_inputs": [{"group": "Uma Shader", "input": "Emmission Toggle", "value": 1}]}
+    ],
+    "eye": [
+      {"node": "Image Texture", "source": true, "colorspace": "sRGB"},
+      {"node": "Image Texture.001", "replace": ["eye0", "eyehi00"], "colorspace": "Non-Color", "optional": true},
+      {"node": "Image Texture.002", "replace": ["eye0", "eyehi01"], "colorspace": "Non-Color", "optional": true},
+      {"node": "Image Texture.003", "replace": ["eye0", "eyehi02"], "colorspace": "Non-Color", "optional": true}
+    ]
+  },
+  "part_inputs": [
+    {"part": "face", "group": "Uma Shader", "input": "Toggle If Face [0=Off,1=On]", "value": 1}
+  ],
+  "outline": {
+    "group": "Uma Outlines",
+    "modifier": "Uma Outlines",
+    "material": "outline",
+    "inputs": {"depth_offset": {"name": "Depth Offset", "identifier": "Input_15", "value": 0.1}, "camera": {"name": "Camera", "identifier": "Input_13"}, "material": {"name": "Outline Material", "identifier": "Input_18"}},
+    "source_attribute": "UV3",
+    "width_attribute": "UMA_OutlineWidth",
+    "width": 0.25
+  },
+  "sun": "Uma Sun [DO NOT DELETE]",
+  "group_hints": [
+    "Uma Shader",
+    "Uma Eyes"
+  ],
+  "settings": [
+    {"key": "uma_shader_world_light", "input": "Toggle World Light Influence", "section": "World Light", "kind": "number", "default": 0.0, "min": 0.0, "max": 1.0, "soft_min": 0.0, "soft_max": 1.0,
+     "description": "Off: the shader's own light direction (the sun empty) decides which side is lit. On: the scene's real lighting does, sampled through a Diffuse BSDF and Shader to RGB - the release note's option for the shader to react to world lighting. 0 is off, 1 is on"},
+    {"key": "uma_shader_light_threshold", "input": "Light Threshold", "section": "Light Threshold", "kind": "number", "default": 0.2, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
+     "description": "How dark a shaded area has to be before it counts as shadow. Lower catches more of the model; higher keeps more of the flat colour"},
+    {"key": "uma_shader_global_color", "input": "Global Color", "section": "Global Color", "kind": "colour", "default": [1.0, 1.0, 1.0, 1.0],
+     "description": "Tint multiplied over the whole character, over both the lit and the shaded side - the release note's global colour tint"},
+    {"key": "uma_shader_diffuse_intensity", "input": "Diffuse Intensity", "section": "Diffuse", "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+     "description": "Strength of the lit (diffuse) side of the character"},
+    {"key": "uma_shader_diffuse_saturation", "input": "Diffuse Saturation", "section": "Diffuse", "kind": "number", "default": 1.0, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 2.0,
+     "description": "Colour saturation of the lit side. 0 is greyscale, 1 is the texture's own colours"},
+    {"key": "uma_shader_diffuse_color", "input": "Diffuse Color", "section": "Diffuse", "kind": "colour", "default": [1.0, 1.0, 1.0, 1.0],
+     "description": "Tint of the lit side, multiplied over the texture"},
+    {"key": "uma_shader_shaded_intensity", "input": "Shaded Intensity", "section": "Shaded", "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+     "description": "Strength of the shadowed side"},
+    {"key": "uma_shader_shaded_saturation", "input": "Shaded Saturation", "section": "Shaded", "kind": "number", "default": 1.0, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 2.0,
+     "description": "Colour saturation of the shadowed side"},
+    {"key": "uma_shader_shaded_color", "input": "Shaded Color", "section": "Shaded", "kind": "colour", "default": [1.0, 1.0, 1.0, 1.0],
+     "description": "Tint of the shadowed side, multiplied over the texture"},
+    {"key": "uma_shader_metallic_intensity", "input": "Metallic Intensity", "section": "Metallic", "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+     "description": "Strength of the metallic response"},
+    {"key": "uma_shader_metallic_color", "input": "Metallic Color", "section": "Metallic", "kind": "colour", "default": [1.0, 1.0, 1.0, 1.0],
+     "description": "Tint of the metallic response"},
+    {"key": "uma_shader_highlight_intensity", "input": "Highlight Intensity", "section": "Highlight", "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+     "description": "Strength of the specular highlight"},
+    {"key": "uma_shader_highlight_color", "input": "Highlight Color", "section": "Highlight", "kind": "colour", "default": [1.0, 1.0, 1.0, 1.0],
+     "description": "Tint of the specular highlight"},
+    {"key": "uma_shader_ambient_rimlight_size", "input": "Ambient Rimlight Size", "section": "Ambient Rimlight", "kind": "number", "default": 0.1, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
+     "description": "Width of the ambient rim, the light that wraps the whole silhouette"},
+    {"key": "uma_shader_ambient_rimlight_intensity", "input": "Ambient Rimlight Intensity", "section": "Ambient Rimlight", "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+     "description": "Strength of the ambient rim"},
+    {"key": "uma_shader_ambient_rimlight_color", "input": "Ambient Rimlight Color", "section": "Ambient Rimlight", "kind": "colour", "default": [1.0, 1.0, 1.0, 1.0],
+     "description": "Tint of the ambient rim"},
+    {"key": "uma_shader_rimlight_size", "input": "Rimlight Size", "section": "Rimlight", "kind": "number", "default": 0.1, "min": 0.0, "max": 4.0, "soft_min": 0.0, "soft_max": 1.0,
+     "description": "Width of the directional rim, the edge light on the lit side"},
+    {"key": "uma_shader_rimlight_intensity", "input": "Rimlight Intensity", "section": "Rimlight", "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+     "description": "Strength of the directional rim"},
+    {"key": "uma_shader_rimlight_color", "input": "Rimlight Color", "section": "Rimlight", "kind": "colour", "default": [1.0, 1.0, 1.0, 1.0],
+     "description": "Tint of the directional rim"},
+    {"key": "uma_shader_emission_intensity", "input": "Emission Intensity", "section": "Emission", "kind": "number", "default": 1.0, "min": 0.0, "max": 8.0, "soft_min": 0.0, "soft_max": 3.0,
+     "description": "Strength of the glow on the parts that have an emission texture (the eyes, mostly)"}
+  ]
+}
