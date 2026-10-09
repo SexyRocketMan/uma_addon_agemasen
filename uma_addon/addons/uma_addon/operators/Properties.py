@@ -395,6 +395,45 @@ class UmaScene(bpy.types.PropertyGroup):
                     "the shader they were made from, and 'Hook up' re-writes the drivers from the new shader's own "
                     "settings table. See docs/SHADER_INTERFACE.md")
 
+    # --- the world-light option, made usable (operators/WorldLight.py) ---------------------------------------
+    #
+    # As 0.2.6 ships it, "react to world lighting" puts the sampled scene light through a hard threshold, multiplies
+    # the result by the sun's own lit/shaded test and adds it to the picture: the shadow boundary smudges, speckles
+    # and lands on polygons, and the Uma Sun empty still has to be aligned with the scene's light or the two disagree
+    # (measured: docs/WORLD_LIGHT_INFLUENCE.md). The patch replaces two links - the sample goes through a soft band
+    # instead of the threshold, and the band (not "sun test x threshold") feeds the blend. On by default, because the
+    # option is not usable without it; reversible with this checkbox, and the patch itself is recorded on the node
+    # group so it can be taken back out from a later session.
+    world_light_band: BoolProperty(
+        name="Soft boundary for the world-light option",
+        default=True,
+        description="When a shader has upstream's world-light option: put the sampled scene light through a soft band "
+                    "instead of a hard threshold at 0.5, and stop the Uma Sun's own shading test from being a factor "
+                    "of it. The sun-driven look (the option at 0) is not affected. Untick to leave the shader exactly "
+                    "as its author shipped it")
+
+    world_light_softness: FloatProperty(
+        name="World light softness",
+        default=0.15,
+        min=0.005,
+        max=0.5,
+        description="Half-width of the band the sampled light is put through, around 0.5: smaller is a harder boundary "
+                    "(closer to the shipped threshold), larger is a softer one. The same idea as the Shadow Softness "
+                    "input of some other toon shaders. Applied at the next Shading run")
+
+    # --- aiming the Uma Sun at the scene's own light ---------------------------------------------------------
+    #
+    # Nothing in this shader carries a *direction* except the Uma Sun empty: the sample it takes is a Diffuse BSDF
+    # with weight 0, an optional socket that cannot simply be turned up, so it carries how much light there is rather
+    # than where it comes from (measured). Aiming the empty at the scene's key light is what makes the shader's
+    # direction agree with the scene's, so nobody has to align it by hand.
+    sun_follow_key_light: BoolProperty(
+        name="Aim the Uma Sun at the scene's key light",
+        default=False,
+        description="Keep the Uma Sun empty turned onto the scene's brightest lamp when Shading or Hook up runs, so "
+                    "the shader's shading direction agrees with the scene's own lighting. Off by default because it "
+                    "moves the empty the file was set up with; 'Aim at the key light' does the same once, by hand")
+
     face_normals: BoolProperty(
         name="Face normals that survive morphs",
         default=True,

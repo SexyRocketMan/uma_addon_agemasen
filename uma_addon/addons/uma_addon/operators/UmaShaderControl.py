@@ -58,6 +58,13 @@ from bpy.types import Menu, Operator
 
 from . import ShaderManifest
 
+# The world-light patch and the sun aiming (operators/WorldLight.py). Optional in the same way the control is: the
+# panel and the drivers still work without it, they just cannot soften the world-light option or aim the sun.
+try:
+    from . import WorldLight
+except ImportError:  # pragma: no cover - only when that file is deleted
+    WorldLight = None
+
 #: The tag reported by the operators and printed when drivers are hooked up, so a report can be told apart from
 #: one produced by a stale copy of this file (the same convention RigifyChains uses with its build tag). `look-2`
 #: stopped this file owning the settings table, `look-3` made the table follow the shader the *scene* chooses, and
@@ -1062,6 +1069,36 @@ class ShaderControlMenu(Menu):
         layout.label(text="%d shader(s) in operators/shaders/" % len(entries), icon='INFO')
 
 
+class ShaderControlAimSun(Operator):
+    """Turn the Uma Sun empty onto the scene's brightest lamp, once, by hand"""
+    bl_idname = "uma.shader_aim_sun"
+    bl_label = "Aim the sun at the key light"
+    bl_description = ("The shader takes its shading *direction* from the Uma Sun empty and nothing else, so this "
+                      "points it the way the scene's own key light points. The alternative is aligning it by hand; "
+                      "the checkbox beside this does it on every Shading run")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene is not None
+
+    def execute(self, context):
+        if WorldLight is None:
+            self.report({'ERROR'}, "operators/WorldLight.py is missing, so there is nothing to aim with")
+            return {'CANCELLED'}
+        manifest, host = operator_table(context)
+        report = WorldLight.aim_at_key_light(context, host)
+        if not report.get("aimed"):
+            self.report({'ERROR'}, "not aimed: %s" % report.get("reason"))
+            return {'CANCELLED'}
+        _settle(context, host)
+        if report.get("changed"):
+            self.report({'INFO'}, "%s is now turned onto %s" % (host.name, report.get("light")))
+        else:
+            self.report({'INFO'}, "%s was already aimed at %s" % (host.name, report.get("light")))
+        return {'FINISHED'}
+
+
 class ShaderControlHook(Operator):
     """Connect the shader settings of every uma to the sun empty and to each character's own overrides"""
     bl_idname = "uma.shader_hook"
@@ -1481,6 +1518,22 @@ def draw_shading_control(layout, context):
                      text="%s (%d setting(s))" % (MANIFEST.get("name") or TABLE_ID, len(SETTINGS)))
     for problem in MANIFEST_PROBLEMS:
         layout.label(text=problem, icon='ERROR')
+
+    # The world-light option and the sun it depends on. Both are *shader* concerns rather than one setting of the
+    # table, so they are drawn here beside the chooser rather than as rows of a block: what the option does to the
+    # picture is decided by these two, and the patch's own record lives on the shader's node group.
+    if WorldLight is not None and scene_props is not None:
+        band = layout.row(align=True)
+        band.prop(scene_props, "world_light_band", text="Soft world-light boundary")
+        if scene_props.world_light_band:
+            band.prop(scene_props, "world_light_softness", text="")
+            band.label(text="applied by Shading")
+        aim = layout.row(align=True)
+        aim.prop(scene_props, "sun_follow_key_light", text="Aim the sun at the key light")
+        aim.operator(ShaderControlAimSun.bl_idname, icon='TRACKER')
+        patched = [group.name for group in bpy.data.node_groups if group.get(WorldLight.PATCH_PROPERTY)]
+        if patched:
+            layout.label(text="soft band in %s" % ", ".join(patched), icon='CHECKMARK')
 
     row = layout.row(align=True)
     row.operator(ShaderControlHook.bl_idname, icon='DRIVER')
