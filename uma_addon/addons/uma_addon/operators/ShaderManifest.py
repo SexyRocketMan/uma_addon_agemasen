@@ -30,8 +30,15 @@ import os
 #: Where the manifests live, beside the `.blend` files they describe (`"blend"` is resolved against this folder).
 DIRECTORY = os.path.join(os.path.dirname(__file__), "shaders")
 
-#: The shader `Shading` uses when a scene has not chosen one.
-DEFAULT_ID = "umashader-0.2.4"
+#: The shader `Shading` uses when a scene has not chosen one, and the shader a scene that names one which is not
+#: installed falls back to.
+#:
+#: **Since 2.25.0 this is upstream's 0.2.6.** Our own 0.2.4 is no longer shipped: it was a verified subset of 0.2.6
+#: everywhere but the outline, and the outline is ours for every shader now that a manifest can name another library
+#: (`outline.blend`, 2.24.0). Its manifest is not lost - it is the *second* shader the two-shader probes install for
+#: the length of a run, which is what keeps the discriminating test alive: 216 nodes against 225, 18 settings against
+#: 20, and two libraries in one scene. The file lives in `UmaViewer-DevTools/fixtures/`.
+DEFAULT_ID = "umashader-0.2.6"
 
 #: The ID property that records which shader a datablock belongs to: the library collection the append step created,
 #: and the sun empty whose settings were made for one shader. One name, one meaning - "this came from / belongs to
