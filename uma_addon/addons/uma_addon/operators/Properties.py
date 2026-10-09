@@ -366,19 +366,14 @@ class UmaScene(bpy.types.PropertyGroup):
     fix_outlines: BoolProperty(
         name="Contain the outline",
         default=True,
-        description="When Shading is applied: point the Uma Outlines modifier at the scene camera (without "
-                    "it the outline offsets from the model's own origin instead of along the view ray), give "
-                    "the shell a neutral width where the export's channel holds packed vertex colours rather "
-                    "than an outline normal set, and give the shell the shipped outline material. Turning it "
-                    "off applies upstream's shading exactly as it ships; see docs/OUTLINES.md")
+        description="Point the Uma Outlines modifier at the scene camera and give the shell a usable width. "
+                    "Off applies upstream's shading exactly as it ships")
 
     shader_control: BoolProperty(
-        name="One control for every uma's shading",
+        name="Unified shader control",
         default=True,
-        description="When Shading is applied: give the sun empty one setting per shader value and each "
-                    "character's root empty the same settings as overrides, then drive every material copy from "
-                    "them, so one slider moves every uma in the scene and a character can still differ. Without "
-                    "it the values stay per material and have to be matched by hand; see docs/SHADER_LOOK.md")
+        description="Drive every material copy from one setting per value on the sun empty, with per-character "
+                    "overrides. Off leaves the values per material, to be matched by hand")
 
     # Which shader library this scene shades with: the id of a manifest in `operators/shaders/`, empty meaning the
     # add-on's default. A scene property rather than a preference, because the shader travels with the scene - and a
@@ -390,77 +385,28 @@ class UmaScene(bpy.types.PropertyGroup):
     shader: StringProperty(
         name="Shader",
         default="",
-        description="Which shader library Shading applies and which settings the control drives. Empty means the "
-                    "add-on's default. It applies to the next Shading run - materials that were already copied keep "
-                    "the shader they were made from, and 'Hook up' re-writes the drivers from the new shader's own "
-                    "settings table. See docs/SHADER_INTERFACE.md")
-
-    # --- the world-light option, made usable (operators/WorldLight.py) ---------------------------------------
-    #
-    # As 0.2.6 ships it, "react to world lighting" puts the sampled scene light through a hard threshold, multiplies
-    # the result by the sun's own lit/shaded test and adds it to the picture: the shadow boundary smudges, speckles
-    # and lands on polygons, and the Uma Sun empty still has to be aligned with the scene's light or the two disagree
-    # (measured: docs/WORLD_LIGHT_INFLUENCE.md). The patch replaces two links - the sample goes through a soft band
-    # instead of the threshold, and the band (not "sun test x threshold") feeds the blend. On by default, because the
-    # option is not usable without it; reversible with this checkbox, and the patch itself is recorded on the node
-    # group so it can be taken back out from a later session.
-    world_light_band: BoolProperty(
-        name="Soft boundary for the world-light option",
-        default=True,
-        description="When a shader has upstream's world-light option: put the sampled scene light through a soft band "
-                    "instead of a hard threshold at 0.5, and stop the Uma Sun's own shading test from being a factor "
-                    "of it. The sun-driven look (the option at 0) is not affected. Untick to leave the shader exactly "
-                    "as its author shipped it")
-
-    world_light_softness: FloatProperty(
-        name="World light softness",
-        default=0.15,
-        min=0.005,
-        max=0.5,
-        description="Half-width of the band the sampled light is put through, around 0.5: smaller is a harder boundary "
-                    "(closer to the shipped threshold), larger is a softer one. The same idea as the Shadow Softness "
-                    "input of some other toon shaders. Applied at the next Shading run")
+        description="Which shader library this scene shades with; empty is the add-on's default. Applies to the next "
+                    "Shading run - materials already copied keep their shader until they are shaded again")
 
     # --- aiming the Uma Sun at the scene's own light ---------------------------------------------------------
     #
-    # Nothing in this shader carries a *direction* except the Uma Sun empty: the sample it takes is a Diffuse BSDF
+    # Nothing in Looper's shader carries a *direction* except the Uma Sun empty: the sample it takes is a Diffuse BSDF
     # with weight 0, an optional socket that cannot simply be turned up, so it carries how much light there is rather
-    # than where it comes from (measured). Aiming the empty at the scene's key light is what makes the shader's
-    # direction agree with the scene's, so nobody has to align it by hand.
+    # than where it comes from (measured: docs/WORLD_LIGHT_INFLUENCE.md). Aiming the empty at the scene's key light is
+    # what makes the shader's direction agree with the scene's, so nobody has to align it by hand. It touches no
+    # shader datablock, which is why it survived the revert of our patch to the shader itself.
     sun_follow_key_light: BoolProperty(
-        name="Aim the Uma Sun at the scene's key light",
+        name="Aim the Uma Sun at the key light",
         default=False,
-        description="Keep the Uma Sun empty turned onto the scene's brightest lamp when Shading or Hook up runs, so "
-                    "the shader's shading direction agrees with the scene's own lighting. Off by default because it "
-                    "moves the empty the file was set up with; 'Aim at the key light' does the same once, by hand")
+        description="Turn the Uma Sun empty onto the scene's brightest lamp when Shading runs, so the shading "
+                    "direction follows the scene. Off by default, because it moves the empty the file came with")
 
     face_normals: BoolProperty(
-        name="Face normals that survive morphs",
+        name="Face normal transfer",
         default=True,
-        description="When Shading is applied: keep a hidden static copy of the face, turning with the head, and "
-                    "transfer its custom split normals onto the face, so a facial morph stops dragging the "
-                    "shading normals with it. On by default because the manual setup it automates is the usual "
-                    "one; untick it if a future shader or model breaks, and 'Remove face normal transfer' takes "
-                    "the copy and the transfer out again. See docs/SHADER_LOOK.md")
-
-    face_normals_split: BoolProperty(
-        name="Separate the face first",
-        default=True,
-        description="When the face is not its own object: separate its polygons into their own object before the "
-                    "transfer, so the transfer runs over the face's corners only. The transfer's cost is set by "
-                    "the size of the mesh it writes to, not by how much it writes - measured +12.5 ms on a "
-                    "12,450-vertex body against +1.4 ms on its 1,635-vertex face - and limiting it with a vertex "
-                    "group saves only 0.9 ms of that. Models whose face already ships as its own object are left "
-                    "alone. Untick it to fall back to the vertex-group transfer on one mesh")
-
-    face_normals_prune_morphs: BoolProperty(
-        name="No duplicated morphs",
-        default=True,
-        description="A separated piece keeps every shape key, including the ones that cannot move it, so a viewer "
-                    "listing the scene's morphs shows each of them twice. This removes from each piece the keys "
-                    "whose vertex offsets are all zero there - which cannot change that piece under any value - "
-                    "measured 118 of 193 keys on the body and 36 on the face for one model. Untick it to keep "
-                    "every key on both pieces")
+        description="Keep a hidden static copy of the face and transfer its custom normals onto the live face, so a "
+                    "facial morph stops dragging the shading with it. Separates the face into its own object first, "
+                    "and drops the morphs that cannot move each piece")
 
     # Which shading groups the panel has folded away, as a bitmask over the groups in the settings table, one for
     # the global settings and one for the selected character's overrides. Here rather than on the objects

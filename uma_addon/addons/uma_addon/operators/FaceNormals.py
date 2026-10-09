@@ -536,20 +536,14 @@ def faces_in(context, objects=None):
 def split_off_face(context, face_obj, trace=None):
     """Separate `face_obj`'s face polygons into their own object and prune both pieces' dead morphs.
 
-    Split into its own function because the settings decide whether it happens at all: with
-    `face_normals_split` off (or when the separation fails) the caller keeps the old vertex-group transfer, and
-    with `face_normals_prune_morphs` off both pieces keep every shape key.
+    Both halves used to be options (`face_normals_split`, `face_normals_prune_morphs`) and both are always on now
+    (2.23.1): the separation is what makes the transfer cost the *face's* corners rather than the whole body's, and the
+    pruning is what stops a viewer listing every morph twice, so neither was a choice worth offering.
     """
-    scene_props = getattr(context.scene, "uma_scene", None)
-    if scene_props is not None and not scene_props.face_normals_split:
-        return None, "the separation is switched off, so the transfer is limited to a vertex group instead"
     piece = split_face_into_object(context, face_obj, trace)
     if piece is None:
         return None, "the face could not be separated"
-    if scene_props is None or scene_props.face_normals_prune_morphs:
-        morphs = prune_split_morphs(face_obj, piece, trace)
-    else:
-        morphs = {"pruned": False}
+    morphs = prune_split_morphs(face_obj, piece, trace)
     return piece, morphs
 
 

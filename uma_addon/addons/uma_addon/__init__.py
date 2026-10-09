@@ -9,7 +9,7 @@ from ...common.class_loader.auto_load import add_properties, remove_properties
 from ...common.i18n.dictionary import common_dictionary
 from ...common.i18n.i18n import load_dictionary
 
-from .panels.Menus import View3dObject_menu, View3dEdit_menu, View3dPose_menu, Outliner_menu, MMR_XFFGL_menu
+from .panels.Menus import View3dObject_menu, View3dEdit_menu, View3dPose_menu, Outliner_menu
 from .operators.Physics import DampedTrackProperties
 from .operators.Properties import UmaScene, UmaObject, UmaArmature
 from .image.ImageManager import load_image, clear_image
@@ -66,11 +66,9 @@ def register():
     bpy.types.VIEW3D_MT_pose_context_menu.append(View3dPose_menu)
     bpy.types.OUTLINER_MT_object.append(Outliner_menu)
 
-    mmr_panel = getattr(bpy.types, "SCENE_PT_MMR_Rig_0", None)
-    if mmr_panel:
-        mmr_panel.append(MMR_XFFGL_menu)
-    else:
-        print("未找到 MMR 插件")
+    # Nothing is appended to MMR's own panel any more: "Generate controller for umamusume" used to be drawn there as
+    # well as next to the fork's chain button (two buttons, one name, different amounts of work), and since 2.23.1
+    # every controller button lives in the add-on's own Controller panel in the order they are used.
 
     bpy.app.timers.register(fill_data_on_start, first_interval=0.1)
     load_image()
@@ -86,10 +84,6 @@ def unregister():
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(View3dEdit_menu)
     bpy.types.VIEW3D_MT_pose_context_menu.remove(View3dPose_menu)
     bpy.types.OUTLINER_MT_object.remove(Outliner_menu)
-
-    mmr_panel = getattr(bpy.types, "SCENE_PT_MMR_Rig_0", None)
-    if mmr_panel:
-        mmr_panel.remove(MMR_XFFGL_menu)
 
     clear_image()
 

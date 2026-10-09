@@ -558,43 +558,12 @@ class ApplyShader(bpy.types.Operator):
             for note in report.get("notes", []):
                 print("[uma_addon] %s: %s" % (SHADER_CONTROL_TAG, note))
 
-        # The world-light option, made usable: the sampled scene light goes through a soft band instead of upstream's
-        # hard threshold, and the sun's own shading test stops being a factor of it (operators/WorldLight.py, and
-        # docs/WORLD_LIGHT_INFLUENCE.md for the measurements). The *group* is shared by every copy, so this patches
-        # the trees the copies drive, once each. Like the face-normal step it must never take the run down: anything
-        # it cannot recognise is reported, and the shader is left exactly as its author shipped it.
+        # The world-light option is left exactly as upstream ships it. 2.23.0 patched it - the sample through a soft
+        # band instead of a hard threshold, and the sun taken out of the world branch - and 2.23.1 took that back out:
+        # the shading was still not good enough to prefer over upstream's (docs/WORLD_LIGHT_INFLUENCE.md sections
+        # 8-10), and the user's call is to hand testers the shader exactly as Looper wrote it, so their feedback is
+        # about *his* shader rather than our fork of it. What is left is the aiming, which touches no shader datablock.
         scene = getattr(context.scene, "uma_scene", None)
-        if WorldLight is not None:
-            materials = [slot.material for slot in obj.material_slots if slot.material is not None]
-            wanted = bool(getattr(scene, "world_light_band", True))
-            for tree in WorldLight.shader_groups(materials):
-                try:
-                    if wanted:
-                        patch_report = WorldLight.patch(tree, getattr(scene, "world_light_softness",
-                                                                      WorldLight.DEFAULT_SOFTNESS))
-                    else:
-                        # Turning the option off has to put the shader back *by itself*: a run that only patches
-                        # when the box is ticked leaves the group patched forever, which is what this check found
-                        # (shader_worldlight_ship_check.py, check 4).
-                        undone = WorldLight.unpatch(tree)
-                        patch_report = {"applied": False, "reverted": undone.get("reverted"),
-                                        "reason": undone.get("reason")}
-                except Exception as error:  # noqa: BLE001 - never take the shading run down
-                    print("[uma_addon] %s: could not %s %s (%s: %s)"
-                          % (WORLD_LIGHT_TAG, "patch" if wanted else "unpatch", tree.name,
-                             type(error).__name__, error))
-                    continue
-                if patch_report.get("applied"):
-                    print("[uma_addon] %s: %s: the sampled scene light now goes through a soft band (%.3f) instead "
-                          "of a threshold, and the sun is no longer a factor of it; untick 'Soft boundary for the "
-                          "world-light option' and run Shading again to put the shader back as shipped"
-                          % (WORLD_LIGHT_TAG, tree.name, patch_report.get("softness")))
-                elif patch_report.get("reverted"):
-                    print("[uma_addon] %s: %s: put back exactly as its author shipped it (the soft band and its "
-                          "record are gone)" % (WORLD_LIGHT_TAG, tree.name))
-                elif wanted:
-                    print("[uma_addon] %s: %s was left alone: %s"
-                          % (WORLD_LIGHT_TAG, tree.name, "; ".join(patch_report.get("problems") or ["unknown"])))
 
         # Aiming the Uma Sun at the scene's own key light, when the user asked for it: the shader's direction comes
         # from that empty and nowhere else, so this is what keeps it in agreement with the scene instead of asking

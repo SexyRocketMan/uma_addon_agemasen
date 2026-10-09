@@ -1,7 +1,7 @@
 import bpy
 from ..config import __addon_name__
 from ..operators.AddonOperators import *
-from ..operators.Controller import GenerateIK, BakeFKtoIK, ToggleTwistConstraints
+from ..operators.Controller import GenerateIK, BakeFKtoIK, ToggleTwistConstraints, MMRRig
 # these live in their own files so they can be removed on their own; without them the panel still draws
 try:
     from ..operators.CollapseRig import CollapseRig
@@ -62,26 +62,6 @@ class ModelProcessPanel(BasePanel, bpy.types.Panel):
         row.prop(scene_props, "del_others", toggle=True, translate=False)
         row.operator(SimplifyArmature.bl_idname)
 
-        layout.operator(ApplyShader.bl_idname, icon="SHADING_RENDERED")
-        # the outline containment is a scene setting, so it is visible before Shading is applied and can be
-        # switched off there; the operator reads it at run time (docs/OUTLINES.md)
-        layout.prop(scene_props, "fix_outlines")
-        layout.prop(scene_props, "shader_control")
-        # The face-normal transfer is the third of these optional shading steps (docs/SHADER_LOOK.md): a hidden
-        # static copy of the face turning with the head, and a data transfer of its custom split normals. On by
-        # default, because the manual setup it automates is the usual one, and the two buttons below are for
-        # re-running or undoing it by hand.
-        row = layout.row(align=True)
-        row.prop(scene_props, "face_normals")
-        if face_normals_module is not None:
-            row.operator(FaceNormalsApply.bl_idname, text="", icon='DRIVER')
-            row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
-        if scene_props.face_normals:
-            # the two settings the step's cost and the viewer's morph list depend on, only worth showing when the
-            # step is on at all
-            options = layout.row(align=True)
-            options.prop(scene_props, "face_normals_split")
-            options.prop(scene_props, "face_normals_prune_morphs")
         layout.operator(FixMini.bl_idname, icon="SHADERFX")
 
         layout.label(text="Use shape keys to drive ear bones")
@@ -376,6 +356,9 @@ class ControllerPanel(BasePanel, bpy.types.Panel):
     def draw(self, context: bpy.types.Context):
         layout = self.layout
         obj_props = getattr(context.active_object, "uma_object", False)
+        # MMR's own controller button, moved here from MMR's panel (the user's request, 2.23.1): it is the first step
+        # of building a controller, and every button that does that now sits in one place, in the order they are used.
+        layout.operator(MMRRig.bl_idname, icon_value=get_image_id("ctrl"))
         if obj_props:
             layout.operator(ToggleTwistConstraints.bl_idname, text="Auto Twist", depress=obj_props.auto_twist_bones)
         else:
@@ -383,10 +366,7 @@ class ControllerPanel(BasePanel, bpy.types.Panel):
         layout.operator(GenerateIK.bl_idname, icon='BONE_DATA')
         layout.operator(BakeFKtoIK.bl_idname, icon='SNAP_ON')
         if RigifyChains is not None:
-            # two ways to build the controller, and both buttons are called "Generate controller for
-            # umamusume" (MMR's own in its panel, the fork's appended next to it). This one is the fork's
-            # plus the hair / cloth / tail chains.
-            layout.label(text="Controller with hair/cloth/tail chains (not the MMR button above):")
+            # the fork's controller: MMR's rig above, plus the hair / cloth / tail chains MMR leaves alone
             layout.operator(RigifyChains.bl_idname, icon='MOD_ARMATURE')
             if RigifyChainRules is not None:
                 layout.operator(RigifyChainRules.bl_idname, icon='PRESET')
@@ -407,8 +387,28 @@ class ShadingLookPanel(BasePanel, bpy.types.Panel):
     bl_idname = "SCENE_PT_umaaddonpanel5"
 
     def draw(self, context: bpy.types.Context):
+        layout = self.layout
+        scene_props = context.scene.uma_scene
+
+        # The shading controls live here rather than under "Processing Model": Shading and what it does to the look
+        # belong with the look (the user's request, 2.23.1).
+        layout.operator(ApplyShader.bl_idname, icon="SHADING_RENDERED")
+        # the outline containment is a scene setting, so it is visible before Shading is applied and can be switched
+        # off there; the operator reads it at run time (docs/OUTLINES.md)
+        layout.prop(scene_props, "fix_outlines")
+        layout.prop(scene_props, "shader_control")
+        # The face-normal transfer (docs/SHADER_LOOK.md): a hidden static copy of the face turning with the head, and
+        # a data transfer of its custom split normals, so a facial morph does not drag the shading normals with it.
+        # One switch, because the two things it used to offer as options - separating the face into its own object
+        # first, and dropping the morphs that cannot move a piece - are what makes it work and are always on now.
+        row = layout.row(align=True)
+        row.prop(scene_props, "face_normals")
+        if face_normals_module is not None:
+            row.operator(FaceNormalsApply.bl_idname, text="", icon='DRIVER')
+            row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
+
         if draw_shading_control is None:
-            self.layout.label(text="UmaShaderControl.py is missing", icon='ERROR')
+            layout.label(text="UmaShaderControl.py is missing", icon='ERROR')
             return
-        draw_shading_control(self.layout, context)
+        draw_shading_control(layout, context)
     

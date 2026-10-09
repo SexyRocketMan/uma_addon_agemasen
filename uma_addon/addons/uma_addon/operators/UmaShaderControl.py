@@ -1519,21 +1519,13 @@ def draw_shading_control(layout, context):
     for problem in MANIFEST_PROBLEMS:
         layout.label(text=problem, icon='ERROR')
 
-    # The world-light option and the sun it depends on. Both are *shader* concerns rather than one setting of the
-    # table, so they are drawn here beside the chooser rather than as rows of a block: what the option does to the
-    # picture is decided by these two, and the patch's own record lives on the shader's node group.
+    # Where the shader's shading *direction* comes from: the Uma Sun empty and nowhere else, so aiming it at the
+    # scene's own key light is what saves aligning it by hand. (2.23.0 also patched the shader's world-light option
+    # here; 2.23.1 took that back out - see docs/WORLD_LIGHT_INFLUENCE.md - so what is left touches no shader.)
     if WorldLight is not None and scene_props is not None:
-        band = layout.row(align=True)
-        band.prop(scene_props, "world_light_band", text="Soft world-light boundary")
-        if scene_props.world_light_band:
-            band.prop(scene_props, "world_light_softness", text="")
-            band.label(text="applied by Shading")
         aim = layout.row(align=True)
-        aim.prop(scene_props, "sun_follow_key_light", text="Aim the sun at the key light")
-        aim.operator(ShaderControlAimSun.bl_idname, icon='TRACKER')
-        patched = [group.name for group in bpy.data.node_groups if group.get(WorldLight.PATCH_PROPERTY)]
-        if patched:
-            layout.label(text="soft band in %s" % ", ".join(patched), icon='CHECKMARK')
+        aim.prop(scene_props, "sun_follow_key_light", text="Aim the Uma Sun at the key light")
+        aim.operator(ShaderControlAimSun.bl_idname, text="", icon='TRACKER')
 
     row = layout.row(align=True)
     row.operator(ShaderControlHook.bl_idname, icon='DRIVER')
