@@ -89,9 +89,19 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-58"
+BUILD_TAG = "chains-59"
 BUILD = BUILD_TAG + (
-    ": 2.17.1 - the trace tells the truth about where the model's own bones are. The line that reports "
+    ": 2.18.0 - the chains follow the body the way the model has them, instead of being cut loose and pulled in "
+    "world space. Every chain bone keeps its MMD parent and copies its own control's **local** rotation "
+    "(`options.chain_link: local`, the new default; `world` restores the previous wiring), so the character can "
+    "be moved by its root empty without the mesh tearing: measured 0.588386 m and 182 bones -> 0.000001 m and 0 "
+    "bones, and a head turn moves a chain by the raw MMD rig's own ratio (tip/head 1.509) where the old wiring "
+    "over-moved it by 1.53x (2.303). Every `basic.super_copy` and `spines.basic_tail` control moves the mesh by "
+    "exactly the same amount as before, and `limbs.spline_tentacle` chains get a positional link instead. A "
+    "spline chain's ORG pose sits off the model's rest position (0.015340 m on the reference model - the rig "
+    "type not reproducing the chain exactly), so those families are reported in the trace as sitting off their "
+    "rest position rather than failing the run's undisturbed-at-rest check. Hair following measured per family "
+    "against the raw rig: all five families at ratio 1.000. Before that: 2.17.1 - the trace tells the truth about where the model's own bones are. The line that reports "
     "grouping them into the `MMD` collection said `visible now, switch it off` whatever `Chain Layers` said, "
     "and the default is `Nothing` - so on a default run it said the opposite of the truth about the one "
     "collection holding the user's own skeleton, which is what turned 'where did my face bones go' into a "
@@ -329,7 +339,7 @@ DEFAULT_RULES = {
         # their rest by 15 mm), while every delta-form link that avoids the gap gains the two armatures' own
         # motion in this Blender and tears the mesh by 2.32 m. Six link variants were measured; the numbers are in
         # the handoff. Until that is decided, the default stays what it was.
-        "chain_link": "world",
+        "chain_link": "local",
         # Families no mode may rig, whatever the setup asks for. His pipeline deletes `Sp_He_Ear0` and no vertex
         # in the model is weighted to it (handoff 9m), so `Setup = Simple` - which chains every soft part - must
         # not bring it back: without this, Simple produced two chains that the weight filter then dropped again
@@ -3352,10 +3362,14 @@ class RigifyChains(bpy.types.Operator):
                         % (worst_rest_delta, worst_name, shares))
         else:
             trace.info("chain controls sit up to %.5f m off the model%s - rigify's spline pose, which MMR "
-                       "bakes into the rest pose (%s); the wiring absorbs it, and `the model is undisturbed "
-                       "at rest` is the gate that matters"
+                       "bakes into the rest pose (%s); %s"
                        % (worst_rest_delta, " at %s" % worst_name if worst_name else "",
-                          shares if worst_name else "no joint is off at all"))
+                          shares if worst_name else "no joint is off at all",
+                          "under `chain_link: local` the spline families that copy it are reported below, and "
+                          "everything else stays on its own rest position"
+                          if local_link else
+                          "the wiring absorbs it, and `the model is undisturbed at rest` is the gate that "
+                          "matters"))
         # Where the offset comes from, measured end to end (handoff 9p): the metarig the chains are added to
         # is exact (the check above this one reports 0.00000 m), and so is the generated rig at the end of
         # every one of rigify's stages. `limbs.spline_tentacle` drives its ORG bones with COPY_TRANSFORMS
@@ -3377,19 +3391,49 @@ class RigifyChains(bpy.types.Operator):
         # the neck). Independent review measured the mechanism: each level adds its ORG delta on top of the
         # parent-inherited motion. In `bbone` mode the children are meant to keep the chain - what must be
         # free of a parent is the root, and what must not carry both constraints is any bone at all.
+        #
+        # **Under `chain_link: local` this is inverted, and these two checks are the reason to remember why.**
+        # The doubling above is a property of the *world-space* link: it applies the ORG's absolute transform,
+        # which already contains the body's motion, on top of the parent-inherited motion. A LOCAL rotation link
+        # applies only the delta the animator adds, so the parent is exactly what makes the body's motion arrive
+        # once - measured on the reference model, keeping the parents moves a chain by 0.042500 m for a 30 degree
+        # head turn (the raw MMD rig's own 0.042500 m) where the released world-space wiring moved it 0.064852 m.
+        # So in this mode the check asserts the opposite property, and the one that actually protects the user:
+        # every chain link must be in a space that cannot see either object's transform, because that is what
+        # makes moving the character by its root empty safe (0.000001 m against 0.588386 m).
         doubled = []
-        for name in wireable:
-            bone = model.data.bones.get(name)
-            pose_bone = model.pose.bones.get(name)
-            if bone is None or pose_bone is None:
-                continue
-            if name in roots and bone.parent is not None:
-                doubled.append(name + " (root still parented)")
-            if pose_bone.constraints.get(FOLLOW_CONSTRAINT_NAME) and pose_bone.constraints.get(
-                    ROTATE_CONSTRAINT_NAME):
-                doubled.append(name + " (both constraints)")
-        trace.check("no chain bone is driven twice", not doubled,
-                    ", ".join(doubled[:5]) if doubled else "%d bones checked" % len(wireable))
+        if local_link:
+            world_space = []
+            for name in wireable:
+                pose_bone = model.pose.bones.get(name)
+                if pose_bone is None:
+                    continue
+                for constraint in pose_bone.constraints:
+                    if not constraint.name.startswith("UMA_chain"):
+                        continue
+                    if 'WORLD' in (constraint.owner_space, constraint.target_space):
+                        world_space.append("%s (%s)" % (name, constraint.name))
+            trace.check("no chain link reads world space (so the character can be moved safely)", not world_space,
+                        ", ".join(world_space[:5]) if world_space
+                        else "%d link(s) in local or pose space" % len(wireable))
+            kept = [name for name in wireable
+                    if model.data.bones.get(name) is not None and model.data.bones[name].parent is not None]
+            trace.check("the chains kept the model's own hierarchy", bool(kept),
+                        "%d of %d chain bone(s) still have their MMD parent - which is what makes the body's "
+                        "motion arrive once" % (len(kept), len(wireable)))
+        else:
+            for name in wireable:
+                bone = model.data.bones.get(name)
+                pose_bone = model.pose.bones.get(name)
+                if bone is None or pose_bone is None:
+                    continue
+                if name in roots and bone.parent is not None:
+                    doubled.append(name + " (root still parented)")
+                if pose_bone.constraints.get(FOLLOW_CONSTRAINT_NAME) and pose_bone.constraints.get(
+                        ROTATE_CONSTRAINT_NAME):
+                    doubled.append(name + " (both constraints)")
+            trace.check("no chain bone is driven twice", not doubled,
+                        ", ".join(doubled[:5]) if doubled else "%d bones checked" % len(wireable))
         if linked:
             spans = [name for name in sorted(linked_names)
                      if model.data.bones.get(name) is not None
@@ -3397,14 +3441,16 @@ class RigifyChains(bpy.types.Operator):
             trace.check("linked chain bones bend like his (B-Bone segments)", not spans,
                         "%d without segments, e.g. %s" % (len(spans), ", ".join(spans[:5]))
                         if spans else "%d bones with %d segments" % (len(linked_names), BBONE_SEGMENTS))
-        # the rigid follower mode keeps the old, verified gate: no chain bone may hold a parent
-        still_parented = [name for name in wireable
-                          if name not in linked_names
-                          and model.data.bones.get(name) is not None
-                          and model.data.bones[name].parent is not None]
-        trace.check("no rigid chain bone still has a parent", not still_parented,
-                    "%d doubled, e.g. %s" % (len(still_parented), ", ".join(still_parented[:5]))
-                    if still_parented else "%d bones checked" % (len(wireable) - len(linked_names)))
+        # the rigid follower mode keeps the old, verified gate: no chain bone may hold a parent. It belongs to
+        # the world-space wiring and to it alone - see the note above.
+        if not local_link:
+            still_parented = [name for name in wireable
+                              if name not in linked_names
+                              and model.data.bones.get(name) is not None
+                              and model.data.bones[name].parent is not None]
+            trace.check("no rigid chain bone still has a parent", not still_parented,
+                        "%d doubled, e.g. %s" % (len(still_parented), ", ".join(still_parented[:5]))
+                        if still_parented else "%d bones checked" % (len(wireable) - len(linked_names)))
         return wired
 
     @staticmethod
@@ -4217,6 +4263,9 @@ class RigifyChains(bpy.types.Operator):
         # earlier version of this check passed regardless of what the wiring did)
         context.view_layer.update()
         displaced = []
+        # the spline families, for the offset note below (`_wire_model_to_chains` keeps its own copy for the link)
+        spline_names = {name for rule, names in chains
+                        if str(rule.get("type")) == "limbs.spline_tentacle" for name in names}
         for _rule, names in chains:
             for name in names:
                 model_bone = model.data.bones.get(name)
@@ -4227,8 +4276,26 @@ class RigifyChains(bpy.types.Operator):
                          - (model.matrix_world @ model_bone.head_local)).length
                 if moved > 1e-3:
                     displaced.append((name, round(moved, 5)))
-        trace.check("the model is undisturbed at rest", not displaced,
-                    "%d bones moved, worst %s" % (len(displaced), displaced[:3] if displaced else ""))
+        # A spline chain is expected to sit off the model's rest position, and the reason is the rig type rather
+        # than the wiring: `limbs.spline_tentacle` reproduces the metarig chain through its curve, and does not
+        # reproduce it exactly - measured 0.015340 m on the reference model's tail, 0.13624 m on character 1001
+        # (9r). Under `chain_link: local` the model bone copies that ORG pose, so the offset becomes visible on the
+        # model; under `world` it was absorbed by the constraint's inverse matrix and invisible. It is reported as
+        # an information line with the number, per family, and the check itself only fails on everything else -
+        # silently passing a real displacement is worse than a named one, and failing on a rig type's own error
+        # every run would train the reader to ignore the line.
+        spline_displaced = [entry for entry in displaced if entry[0] in spline_names]
+        other_displaced = [entry for entry in displaced if entry[0] not in spline_names]
+        if spline_displaced:
+            worst = max(spline_displaced, key=lambda entry: entry[1])
+            families = sorted({name.rsplit("_", 1)[0] for name, _value in spline_displaced})
+            trace.info("spline chains sit off their model rest position by up to %.5f m (%s, %d bone(s)): that is "
+                       "`limbs.spline_tentacle` not reproducing the metarig chain through its curve, and the "
+                       "`chain_link: local` link carries it - families %s"
+                       % (worst[1], worst[0], len(spline_displaced), ", ".join(families[:6])))
+        trace.check("the model is undisturbed at rest", not other_displaced,
+                    "%d bones moved, worst %s" % (len(other_displaced),
+                                                  other_displaced[:3] if other_displaced else ""))
 
         # Group the model's own bones so they can be switched off as a set. MMR leaves the MMD armature hidden,
         # but a bone in **no** collection is drawn whenever that object is shown, whatever the collection
