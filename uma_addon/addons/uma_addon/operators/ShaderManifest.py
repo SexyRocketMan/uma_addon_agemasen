@@ -126,6 +126,11 @@ def validate(manifest):
     outline = manifest.get("outline")
     if outline is not None and (not isinstance(outline, dict) or not isinstance(outline.get("inputs"), dict)):
         problems.append("'outline' has no 'inputs' table (the socket names and their identifiers)")
+    elif isinstance(outline, dict) and "blend" in outline and not (isinstance(outline.get("blend"), str)
+                                                                 and outline["blend"]):
+        # `outline.blend` is optional and means "take the outline group out of this other library" (2.24.0). A
+        # non-text value there would be silently ignored by the apply step, so it is a problem rather than a shrug.
+        problems.append("'outline.blend' is present but not a file name")
 
     seen = set()
     for row in manifest.get("settings") if isinstance(manifest.get("settings"), list) else []:
@@ -204,6 +209,36 @@ def items():
 
 
 
+def looks_like_a_manifest(manifest):
+    """True when a readable JSON object has the fields a shader manifest must have.
+
+    `available()` lists what the folder holds, so it has to tell a shader from *any other* JSON that ends up in
+    there. The rule used to be "it parsed into an object", and that was wrong the first time something else wrote a
+    file into the folder: `shader_manifest_blend_check.py` put its own report beside the manifest it was checking
+    (`umashader-0.2.6_blend_check.json`), and the chooser promptly offered it as a shader - `Shading` could be asked
+    for it, and its id would have been read from the file name. A shader needs the `.blend` it is drawn from, the
+    collection to append and the texture recipes to apply, so a JSON object with none of those is not one; it is
+    skipped with no complaint, because a report is not a mistake the user made.
+
+    `active()` deliberately stays tolerant - it is handed an id the user *chose*, and the design is that a manifest
+    which is readable but incomplete still applies the parts it names. The folder-level filter below is what keeps a
+    file that is not a manifest from being choosable in the first place, which is where the bug actually was.
+    """
+    if not isinstance(manifest, dict):
+        return False
+    for field in REQUIRED_TEXT:
+        if not isinstance(manifest.get(field), str) or not manifest[field]:
+            return False
+    for field in REQUIRED_LIST:
+        if not isinstance(manifest.get(field), list):
+            return False
+    for field in REQUIRED_DICT:
+        if not isinstance(manifest.get(field), dict) or not manifest[field]:
+            return False
+    materials = manifest.get("materials")
+    return isinstance(materials, dict) and bool(materials.get("default"))
+
+
 def available():
     """Every readable manifest in the folder, by id - what a shader chooser will list (step 5)."""
     found = {}
@@ -215,6 +250,6 @@ def available():
         if not name.endswith(".json"):
             continue
         manifest, _problems = load(name[:-len(".json")])
-        if manifest is not None:
+        if manifest is not None and looks_like_a_manifest(manifest):
             found[manifest.get("id") or name[:-len(".json")]] = manifest
     return found

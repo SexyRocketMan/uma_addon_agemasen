@@ -383,17 +383,21 @@ def ensure_library(manifest, blend_file, context):
     return collection, masters, notes
 
 
-def ensure_node_group(blend_file, group_name, manifest_id):
+def ensure_node_group(blend_file, group_name, manifest_id, adopt=True):
     """The shader file's own copy of a node group, tagged like the collection, or None when the file has none.
 
     Both shaders name their outline group `Uma Outlines`, so the same by-name trap applies: a mesh shaded with one
     shader and a mesh shaded with the other would otherwise be given the same group. The tag is what separates them,
     and a group that is already there with no tag is adopted when it is the default shader asking.
+
+    `adopt=False` turns that adoption off, which is what a manifest naming `outline.blend` needs: there the group is
+    supposed to come from *that* file, so an untagged group of the same name - upstream's 64-node shell, appended by
+    a build from before the tags existed - must not be mistaken for ours and re-tagged as if it were.
     """
     for group in bpy.data.node_groups:
         if group.name == group_name and group.get(ShaderManifest.SOURCE_PROPERTY) == manifest_id:
             return group
-    if manifest_id == ShaderManifest.DEFAULT_ID:
+    if adopt and manifest_id == ShaderManifest.DEFAULT_ID:
         untagged = [group for group in bpy.data.node_groups
                     if group.name == group_name and not group.get(ShaderManifest.SOURCE_PROPERTY)]
         if untagged:
@@ -517,15 +521,28 @@ class ApplyShader(bpy.types.Operator):
                         set_group_input(nodes, spec)
 
         # 为选中模型加上 shader 手册里说的那个 outline 几何节点
+        #
+        # Which file that group comes from is the manifest's business, not the shader's: `outline.blend` names
+        # another library to take it out of, and it exists for one measured reason. Our own outline group is 71
+        # nodes and carries `Only Depth Offset` and `Value`; upstream's 0.2.6 ships a 64-node one with neither, so a
+        # character shaded with 0.2.6 quietly got upstream's shell while our code wrote at socket names that were not
+        # there (it reports instead of raising, so nothing looked broken). Naming `Umashaders.blend` here gives every
+        # shader our outline - and that file ships anyway, being the action library. `adopt=False` because the file
+        # is authoritative: an untagged group of the same name is NOT the one this manifest asked for.
         outline = manifest.get("outline") or {}
         modifier_name = outline.get("modifier")
         group_name = outline.get("group")
+        outline_blend = os.path.join(os.path.dirname(__file__), outline["blend"]) if outline.get("blend") else ""
         if outline and modifier_name and group_name:
             if modifier_name not in obj.modifiers:
-                node_group = ensure_node_group(blend_file, group_name, manifest["id"])
+                node_group = ensure_node_group(outline_blend or blend_file, group_name, manifest["id"],
+                                               adopt=not outline_blend)
                 if node_group:
                     geom_mod = obj.modifiers.new(name=modifier_name, type='NODES')
                     geom_mod.node_group = node_group
+                elif outline_blend:
+                    print(f"[uma_addon] {outline['blend']} has no {group_name!r} node group, so {obj.name} gets no "
+                          f"outline shell; the manifest's 'outline.blend' names it")
 
             geom_mod = obj.modifiers.get(modifier_name)
             if geom_mod is not None:
