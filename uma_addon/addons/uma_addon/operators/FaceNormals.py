@@ -163,6 +163,22 @@ def is_whole_face(mesh_obj):
     return face_polygon_count(mesh_obj) == total
 
 
+def restore_mode(context, obj, mode):
+    """Put an object back in the mode it was in, for a step that had to switch. Best effort, never raising.
+
+    Only ever needed on a *failure* path: a step that switches to Edit Mode and back leaves the user where they
+    were, but one that raises in between would leave them in Edit Mode while the run carries on and reports success.
+    """
+    try:
+        if obj is not None and obj.mode != mode:
+            with context.temp_override(object=obj, active_object=obj, selected_objects=[obj],
+                                       selected_editable_objects=[obj]):
+                bpy.ops.object.mode_set(mode=mode)
+        return obj is not None and obj.mode == mode
+    except Exception:  # noqa: BLE001 - a courtesy to the user, not part of the result
+        return False
+
+
 def split_face_into_object(context, mesh_obj, trace=None):
     """Separate the face's polygons into their own object and return it (or None, with the reason).
 
@@ -175,6 +191,13 @@ def split_face_into_object(context, mesh_obj, trace=None):
 
     What is *not* left as Blender makes it: the new object is named (`.001` is not an answer), it is marked as ours,
     and its shape keys are pruned by `prune_dead_shape_keys` unless that is switched off.
+
+    **The failure path restores the mode, and that is not a nicety.** `mesh.separate` raises
+    `RuntimeError: Error: Nothing selected` when nothing is selected - which is the case whenever the face has no
+    polygons left to separate, e.g. the face is already its own object and `Shading` is run again - and it raises
+    *after* the switch to Edit Mode. Measured before the fix: the shading run finished, reported "Uma shader
+    applied", and left the user in `EDIT_MESH` with no hint why; the only sign was a line in the console
+    (`shader_side_effects_check.py` reproduces it). So the mode is remembered and put back on every exit.
     """
     before = {obj.name for obj in context.scene.objects}
     # the selection is remembered: separating leaves the new piece selected, and `ApplyShader`'s poll wants exactly
@@ -182,6 +205,7 @@ def split_face_into_object(context, mesh_obj, trace=None):
     # (measured: `bpy.ops.uma.apply_shader.poll() failed, context is incorrect` in face_normals_check.py)
     selection = [obj for obj in context.selected_objects]
     active = context.view_layer.objects.active if getattr(context, "view_layer", None) is not None else None
+    mode_before = getattr(mesh_obj, "mode", "OBJECT")
     try:
         with context.temp_override(object=mesh_obj, active_object=mesh_obj, selected_objects=[mesh_obj],
                                    selected_editable_objects=[mesh_obj]):
@@ -196,9 +220,12 @@ def split_face_into_object(context, mesh_obj, trace=None):
             bpy.ops.mesh.separate(type='SELECTED')
             bpy.ops.object.mode_set(mode='OBJECT')
     except Exception as error:  # noqa: BLE001 - the caller falls back to the vertex-group transfer
+        back = restore_mode(context, mesh_obj, mode_before)
         if trace is not None:
             trace.info("could not separate the face of %r (%s: %s); the transfer stays on the whole mesh, limited "
-                       "by a vertex group" % (mesh_obj.name, type(error).__name__, error))
+                       "by a vertex group%s"
+                       % (mesh_obj.name, type(error).__name__, error,
+                          "" if back else "; and the mode could not be put back either"))
         return None
 
     new = [obj for obj in context.scene.objects if obj.name not in before]
