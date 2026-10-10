@@ -89,9 +89,20 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-59"
+BUILD_TAG = "chains-60"
 BUILD = BUILD_TAG + (
-    ": 2.18.0 - the chains follow the body the way the model has them, instead of being cut loose and pulled in "
+    ": 2.27.0 - the Pumpkin Rig dialog opens on Simple and on the rules table, every time. Blender hands an "
+    "operator its last-used property values and this operator's properties *are* the dialog, so a second model "
+    "used to open on the first model's mode, with its per-family answers already in the rows - the user's *\"some "
+    "settings are retained from the first run, e.g. tentacle type used for the hair and the extras\"*. A group "
+    "whose families disagree now reads `Mixed` instead of its most common answer, and a click on that row writes "
+    "the chosen type through to every family in it (measured: every group set to `basic.super_copy` leaves no "
+    "non-fixed family in those groups on anything else) - which is what let the dialog stop forcing itself into "
+    "Advanced, since that switch was the only thing standing between the old display and a silent flattening. The "
+    "X-ray row and the preset search box are off the dialog (both properties stay, so a scene, a preset or a "
+    "script still sets them), the dropdowns have one-word headers, and every tooltip here is two sentences or "
+    "fewer. Before that: 2.18.0 - the chains follow the body the way the model has them, instead of being cut "
+    "loose and pulled in "
     "world space. Every chain bone keeps its MMD parent and copies its own control's **local** rotation "
     "(`options.chain_link: local`, the new default; `world` restores the previous wiring), so the character can "
     "be moved by its root empty without the mesh tearing: measured 0.588386 m and 182 bones -> 0.000001 m and 0 "
@@ -511,17 +522,26 @@ TYPE_MODES = {
 # The plain-English sentence stays in the tooltip, so the dropdown is still readable to somebody who does not know
 # rigify's taxonomy. Asked for by the user: *"I'd also think we should use the rigify rig type names in the Pumpkin
 # Rig menu - that will be clearer to the experienced animators."*
+#
+# The tooltips are one line each on purpose (the user: *"trim down the tooltips... keep it dry, two sentences
+# max"*); what a type *does* is rigify's own documentation, and what it does *here* is in the module docstring and
+# in the trace of a run.
 TYPE_CHOICES = [
-    (MODE_OFF, "none", "No rig type: the bones keep MMR's behaviour and get no control of their own. This is the "
-                       "`^Sp_` catch-all in the rules table"),
-    (MODE_STUB, "basic.super_copy", "One control per bone, no chain. Rigify's `basic.super_copy`: the type the "
-                                    "animator uses for cloth and hair he does not want to chain"),
-    (MODE_TAIL, "spines.basic_tail", "A chain per root with tweak controls, curling when a control is pushed. "
-                                     "Rigify's `spines.basic_tail`, which his own metarig uses for the ears and "
-                                     "the hair he does chain"),
-    (MODE_SPLINE, "limbs.spline_tentacle", "A chain driven by a spline, posed at its `_master` bone. Rigify's "
-                                           "`limbs.spline_tentacle`, which his metarig uses for the big hair and "
-                                           "the tail"),
+    (MODE_OFF, "none", "No control of its own: the bones keep MMR's behaviour"),
+    (MODE_STUB, "basic.super_copy", "One control per bone, no chain"),
+    (MODE_TAIL, "spines.basic_tail", "A chain per root with tweak controls, curling when a control is pushed"),
+    (MODE_SPLINE, "limbs.spline_tentacle", "A chain driven by a spline, posed at its `_master` bone"),
+]
+
+#: The group rows' own list: the same four types plus `Mixed`, which is what a group shows when its families hold
+#: more than one answer. `Mixed` is a *display* state and never a choice - it is deliberately absent from
+#: `TYPE_CHOICES`, so a family row cannot be set to it, and `adopt_group_edits` ignores it rather than writing it
+#: through to the families. Before this existed a group with two answers was shown as its *most common* one, and the
+#: only thing standing between that and a silent flattening was the dialog forcing itself open on Advanced - which
+#: is what the user reported ("Advanced mode is always selected whenever pumpkin rig is run").
+MODE_MIXED = "MIXED"
+GROUP_CHOICES = TYPE_CHOICES + [
+    (MODE_MIXED, "Mixed", "This group's families are set individually - Advanced shows them one by one"),
 ]
 
 SIMPLE_GROUPS = ("Hair", "Skirt", "Chest", "Tail", "Extras", "Other")
@@ -1588,15 +1608,16 @@ def sync_preset(self, context):
             item.mode = modes.get(item.family, MODE_OFF)
             item.default_mode = table_modes.get(item.family, MODE_OFF)
         sync_group_fields(self)
-        # A preset that gives one group more than one answer cannot be shown as a group row at all: Simple mode
-        # has a single dropdown per group, so leaving it selected would invite the user to flatten the character
-        # with one click - which is exactly what Maruzensky's rig (Hair0 a stub, Hair2 and Hair4 chains) would
-        # lose. Switch to the mode that can show it, and say so in the panel. The fallback type is excluded from
-        # that test on purpose: it is not an answer anybody chose (`mixed_groups`).
+        # A preset that gives one group more than one answer cannot be shown as a group row at all: Simple mode has
+        # a single dropdown per group, so the row says `Mixed` and the line above it names the groups. This used to
+        # switch the dialog to Advanced as well, which is the user's "Advanced mode is always selected whenever
+        # pumpkin rig is run" - and it fired on nearly every model, because the rules table itself splits hair
+        # (`Hair0` a stub, `Hair2`/`Hair4` chains). `Mixed` closes the hole the switch was guarding: a row that
+        # says `Mixed` cannot be read as one answer, and only a real click rewrites the families in it
+        # (`adopt_group_edits`). The fallback type is excluded from that test on purpose: it is not an answer
+        # anybody chose (`mixed_groups`).
         mixed = mixed_groups(self, TYPE_MODES.get((options.get("unmatched_families") or {}).get("type")))
-        self.Forced_Advanced = ", ".join(mixed)
-        if mixed:
-            self.Mode = 'ADVANCED'
+        self.Mixed_Groups = ", ".join(mixed)
         self.Preset_Note = label if len(label) < 120 else label[:117] + "..."
         self.Preset_Key = self.Preset
     finally:
@@ -1672,6 +1693,20 @@ def detect_step(model, trace=None):
                     "the state a run that stopped before wiring leaves behind" % (rig.name, len(generated)))
 
 
+def fallback_mode(operator, context):
+    """The rules table's own type for a family no rule names - what `mixed_groups` has to leave out of its count.
+
+    Read here rather than passed in, because `draw` needs it: the "set per family" line has to be recomputed on
+    every redraw (see `draw`), and the rules table is cached against the folder's stamp, so this is a dict lookup in
+    the common case. A dialog must never raise, so a rules file that cannot be read simply means no fallback.
+    """
+    try:
+        _rules, options, _source, _presets = preset_table(operator, context)
+    except Exception:  # noqa: BLE001 - a dialog must not raise
+        return None
+    return TYPE_MODES.get((options.get("unmatched_families") or {}).get("type"))
+
+
 def mixed_groups(operator, fallback_mode=None):
     """Groups that hold **more than one real rig type** - a single dropdown cannot show those.
 
@@ -1699,9 +1734,8 @@ class RigifyChainPresetSave(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_preset"
     bl_label = "Save as preset"
-    bl_description = ("Write what the family fields currently say into one small JSON file in the presets folder, "
-                      "so it can be picked again. A preset is a saved set of answers and nothing more: it applies "
-                      "because you choose it, never on its own")
+    bl_description = ("Write the family fields' current answers into one JSON file in the presets folder. Applying "
+                      "a preset fills the rows and nothing else")
     bl_options = {'REGISTER'}
 
     Name: StringProperty(
@@ -1769,9 +1803,8 @@ class RigifyChainPresetReload(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_preset_reload"
     bl_label = "Reload presets"
-    bl_description = ("Read the preset folder again. The list is cached because it is read on every redraw, so "
-                      "this is for a file added or edited on disk; anything saved from Blender refreshes it by "
-                      "itself")
+    bl_description = ("Read the preset folder again, for a file added or edited outside Blender. A preset saved "
+                      "from here refreshes the list by itself")
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -1786,8 +1819,8 @@ class RigifyChainTraceSave(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_trace"
     bl_label = "Save trace to a file"
-    bl_description = ("Write uma_rigify_chains_trace.txt out of the .blend and next to the presets, so it can be "
-                      "attached to a message instead of copied out of a text block")
+    bl_description = ("Write the run's trace out as uma_rigify_chains_trace.txt, beside the presets. This is the "
+                      "file to attach to a message")
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -1835,15 +1868,19 @@ def sync_group_fields(operator):
     (`adopt_group_edits`), and a family row the user moves changes what its group row shows (here). The two
     modes therefore always agree, and switching between them cannot lose or hide a choice. The snapshot is what
     makes the diff possible without callbacks.
+
+    A group whose families disagree shows **`Mixed`** rather than one of those answers. It used to show the most
+    common one, which read as "this group gets that type" while it did not - and the only reason it was not a trap
+    was that the dialog forced itself open on Advanced whenever any group was mixed (the user's *"Advanced mode is
+    always selected"*). `Mixed` says what is true, the row stops being a lie, and a click on it still gives every
+    family in the group that one answer.
     """
     values = {}
     for group in SIMPLE_GROUPS:
         members = [item.mode for item in operator.Families if item.group == group and not item.fixed]
         if not members:
             continue
-        # a group whose families disagree has no single true value: show the most common one, and `draw` says
-        # how many answers there really are
-        value = members[0] if len(set(members)) == 1 else max(set(members), key=members.count)
+        value = members[0] if len(set(members)) == 1 else MODE_MIXED
         setattr(operator, "%s_Mode" % group, value)
         values[group] = value
     set_group_snapshot(operator, values)
@@ -1855,7 +1892,8 @@ def adopt_group_edits(operator):
     Driven from `draw`, against a plain Python snapshot, instead of from an `update` callback. A callback here
     cannot work: this operator's properties are RNA owned by Blender, and the only hook that sees a change is
     `draw` - which is also the only place that is certainly running while the dialog is open. A group whose
-    families disagree keeps whatever they say until the user actually moves that row.
+    families disagree keeps whatever they say until the user actually moves that row, and `Mixed` is not a move:
+    it is what the row shows while they disagree, so selecting it again changes nothing.
     """
     snapshot = group_snapshot(operator)
     if not snapshot:
@@ -1864,7 +1902,7 @@ def adopt_group_edits(operator):
     values = dict(snapshot)
     for group in SIMPLE_GROUPS:
         value = getattr(operator, "%s_Mode" % group, MODE_OFF)
-        if snapshot.get(group) == value:
+        if snapshot.get(group) == value or value == MODE_MIXED:
             continue
         values[group] = value
         for item in operator.Families:
@@ -1896,13 +1934,51 @@ def preset_mismatch(operator):
                if not item.fixed and item.family in wanted and item.mode != wanted[item.family])
 
 
+def reset_dialog_state(operator):
+    """Put the dialog's own fields back to how it opens, before the rows are filled for *this* model.
+
+    The user's report: *"I've tried running pumpkin rig on a second model in a file - I've used the default
+    settings/rules for the first one, but used simple mode with all the groups set to `basic.super_copy` - but for
+    some reason, some settings are retained from the first run, e.g. tentacle type used for the hair and the
+    extras."* And: *"Advanced mode is always selected whenever pumpkin rig is run."* Both are the same thing.
+
+    Blender remembers an operator's last-used property values and seeds the next invocation of that operator with
+    them - it is why `Add Mesh > Cube` remembers the size you typed - and this operator's properties *are* the
+    dialog: `Mode`, `Preset`, the six group fields, and `Families`, a `CollectionProperty` whose rows hold one rig
+    type per physics family. So a fresh dialog for a second model opened on the first model's `Mode` and with the
+    first model's answers already in rows whose families happen to share a name (hair families are called `Hair0`,
+    `Hair2`, `Hair4` on every model), which `_refresh_families(keep=True)` then treated as "what the user set" and
+    kept. Nothing was written to disk: `rules` and `presets` are read-only for a run, which was checked first.
+
+    A background session cannot reproduce Blender handing the values over, so `rigify_dialog_state_check.py` copies
+    them in by hand and asserts this clears them - that is the whole of the fix, and it makes the dialog's opening
+    state a property of the code rather than of what ran before it.
+
+    What is reset is what describes *this run's answers*. What stays is the user's own workflow: `Step` (detected
+    from the scene anyway), `Style`, `Rules_File`, `Chain_Layers`, `Resample`, `Overwrite_Typed`, `Debug` and
+    `More_Options` - a rules file or a style is chosen once and meant to stick, while "what the hair gets" is a
+    question about the model in front of you.
+    """
+    operator.Mode = 'SIMPLE'
+    operator.Preset = PRESET_DEFAULT
+    operator.Preset_Filter = ""
+    operator.Preset_Key = ""
+    operator.Preset_Note = ""
+    operator.Choices = ""
+    operator.Group_Snapshot = ""
+    operator.Mixed_Groups = ""
+    operator.Families.clear()
+    for group in SIMPLE_GROUPS:
+        setattr(operator, "%s_Mode" % group, MODE_OFF)
+
+
 def mode_property(group):
     """One `EnumProperty` per group, for Simple mode. `adopt_group_edits` writes it through to the family rows,
     so the two modes cannot drift apart."""
     return EnumProperty(
         name=group,
-        description="What every family in %s gets. Advanced mode shows the same choice per family" % group,
-        items=TYPE_CHOICES,
+        description="What every family in %s gets" % group,
+        items=GROUP_CHOICES,
         default=MODE_OFF,
     )
 
@@ -1912,16 +1988,14 @@ class RigifyChains(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chains"
     bl_label = "Pumpkin Rig Setup (%s)" % BUILD_TAG
-    bl_description = ("MMR controller plus rigify chains for hair, cloth and tail. Adds the chains to the "
-                      "metarig while rigify is generating, then makes the model follow them. Undoable. [%s]"
-                      % BUILD_TAG)
+    bl_description = ("MMR controller plus rigify chains for hair, cloth and tail, on the metarig the model is then "
+                      "made to follow. Undoable")
     bl_options = {'REGISTER', 'UNDO'}
 
     Step: EnumProperty(
         name="Step",
-        description="Full runs MMR and adds the chains; Wire only re-attaches the model to chains an earlier "
-                    "run already generated (the recovery step for a run that stopped before wiring). The "
-                    "detected value and the reason for it are shown above",
+        description="Full runs MMR and adds the chains; Wire only re-attaches the model to chains an earlier run "
+                    "generated",
         items=[
             ('FULL', "Full", "Run MMR and add the chains"),
             ('WIRE', "Wire only", "Let the model follow the generated chains (after a previous run)"),
@@ -1930,18 +2004,17 @@ class RigifyChains(bpy.types.Operator):
     )
     Mode: EnumProperty(
         name="Mode",
-        description="Simple asks one question per group; Advanced shows every family in the model and lets each "
-                    "one be answered on its own. A preset fills either in",
+        description="Simple asks one question per group; Advanced answers every family on its own",
         items=[
-            ('SIMPLE', "Simple", "One rig type per group: Hair, Skirt, Chest, Extras, Other"),
+            ('SIMPLE', "Simple", "One rig type per group: Hair, Skirt, Chest, Tail, Extras, Other"),
             ('ADVANCED', "Advanced", "One rig type per family: Hair0, Hair2, Hair4, MSkirt0, Jacket0..."),
         ],
         default='SIMPLE',
     )
     Preset: EnumProperty(
         name="Preset",
-        description="Fills the rig type fields with a stored set of answers. Nothing picks one automatically: "
-                    "'Default' is the rules table, and editing any field leaves the preset",
+        description="Fills the rig type rows from a stored set of answers. Nothing picks one automatically - "
+                    "`Default` is the rules table",
         items=preset_items,
         # an index, not a value: Blender requires that when `items` is a callback. `preset_items` always returns
         # `PRESET_DEFAULT` first.
@@ -1950,13 +2023,12 @@ class RigifyChains(bpy.types.Operator):
     )
     Preset_Filter: StringProperty(
         name="Find a preset",
-        description="Narrow the preset list by name; Blender has no search box on an enum, so this is what feeds it",
+        description="Narrow the preset list by name",
         default="",
     )
     Preset_Key: StringProperty(
         name="Preset key",
-        description="The preset the rows were last filled from. A plain string, because reading the `Preset` "
-                    "enum from inside its own items callback re-enters the callback until the stack runs out",
+        description="The preset the rows were last filled from",
         default="",
         options={'HIDDEN'},
     )
@@ -1965,30 +2037,30 @@ class RigifyChains(bpy.types.Operator):
     # `AttributeError: 'UMA_OT_rigify_chains' object has no attribute '_preset_chosen'`).
     Populating: BoolProperty(name="Filling the rows", default=False, options={'HIDDEN'})
     Preset_Note: StringProperty(name="Preset note", default="", options={'HIDDEN'})
-    Forced_Advanced: StringProperty(name="Forced Advanced", default="", options={'HIDDEN'})
+    #: Groups whose families hold more than one rig type, as `"Hair, Extras"`. Reported above the rows; it no longer
+    #: changes the mode (`Mixed` in the group row says the same thing in place - see `sync_group_fields`).
+    Mixed_Groups: StringProperty(name="Mixed groups", default="", options={'HIDDEN'})
     Group_Snapshot: StringProperty(name="Last group values", default="", options={'HIDDEN'})
     # How the rig is *drawn* (chains-38). Display only, so it is not part of a preset: a preset says what a chain
     # is made of, a style says what it looks like, and the two are saved in different folders for that reason.
     # The list is the styles folder; the shipped `coolchou.json` is first and is what a fresh install runs.
     Style: EnumProperty(
         name="Style",
-        description="How the generated rig is displayed: bone colours, widget sizes and the armature's display "
-                    "flags. 'Coolchou's rigs' is the animator's own style, measured out of 14 of his packed rigs; "
-                    "'None' leaves everything exactly as rigify made it. Display only - a style cannot change "
-                    "what the rig does, and applying one twice changes nothing the second time",
+        description="How the generated rig is displayed: bone colours, widget sizes and display flags. Display "
+                    "only - a style cannot change what the rig does",
         items=style_items,
         default=0,
     )
     # X-ray, whole rig or nothing. See the note in `execute`: Blender has no per-bone or per-family X-ray, so this
     # is the only form the choice can take - and it is here rather than only in Blender's own Viewport Display
     # panel because a flip made there lasts until the next run, which re-applies the style.
+    #
+    # The row is commented out of `draw` at the user's request ("X-ray dropdown can be removed"): the style
+    # already carries the answer, and the property stays so a scene, a script or a preset that sets it still works.
     Xray: EnumProperty(
         name="X-ray",
-        description="Whether the model hides the rig. 'From style' takes the style file's answer (the shipped "
-                    "one is off, like his rigs); 'On' draws the rig through the model, which is how a control "
-                    "inside the clothes can still be clicked - most of them are: on a measured model, 34 of 49 "
-                    "chest controls and 159 of 228 body controls sit inside the character. Blender has no "
-                    "per-bone or per-family X-ray, so this is the whole rig",
+        description="Whether the rig is drawn through the model. Blender has no per-bone X-ray, so this is the "
+                    "whole rig",
         items=[
             ('STYLE', "From style", "Use the style file's own X-ray setting"),
             ('ON', "On - draw through the model", "The rig is drawn in front of the character; nothing is hidden "
@@ -2014,16 +2086,15 @@ class RigifyChains(bpy.types.Operator):
     Families: CollectionProperty(type=ChainFamilyType)
     Choices: StringProperty(
         name="Choices",
-        description="family=MODE;family=MODE ... applied after the preset, so a script can say what the "
-                    "dropdowns would. The panel's own dropdowns write the same thing, so the two cannot disagree",
+        description="family=MODE;family=MODE ... applied after the preset, so a script can say what the dropdowns "
+                    "would",
         default="",
         options={'HIDDEN'},
     )
     Chain_Layers: EnumProperty(
         name="Chain Layers",
-        description="Which of the collections this operator creates to switch on. 'Nothing' hides all of them "
-                    "including the model's own MMD collection; 'Controls only' shows each family's control "
-                    "collection; 'Everything' shows the (FK) and (Tweak) sub-layers as well",
+        description="Which of the collections this operator creates to switch on. `Everything` also shows the "
+                    "(FK) and (Tweak) sub-layers",
         items=[
             ('NONE', "Nothing", "Hide every collection this operator creates"),
             ('CONTROLS', "Controls only", "Show each family's controls; keep (FK) and (Tweak) off"),
@@ -2033,15 +2104,15 @@ class RigifyChains(bpy.types.Operator):
     )
     Rules_File: StringProperty(
         name="Rules File",
-        description="JSON file mapping bone name patterns to rigify types. Empty uses the default in the "
-                    "Blender config folder",
+        description="JSON file mapping bone name patterns to rigify types. Empty uses the default in the Blender "
+                    "config folder",
         subtype='FILE_PATH',
         default="",
     )
     Overwrite_Typed: BoolProperty(
         name="Overwrite Existing Types",
-        description="Also re-type bones MMR already rigified (spine, limbs, fingers, head). Off by default "
-                    "so the body keeps behaving exactly as it does now",
+        description="Also re-type bones MMR already rigified (spine, limbs, fingers, head). Off keeps the body "
+                    "behaving exactly as it does now",
         default=False,
     )
     Debug: BoolProperty(
@@ -2052,15 +2123,13 @@ class RigifyChains(bpy.types.Operator):
     More_Options: BoolProperty(
         name="More settings",
         description="Show the settings that decide what the rig is rather than what it contains: the step, the "
-                    "chain joint lengths, whether MMR's own rig types are overwritten, the debug trace and the "
-                    "rules file",
+                    "bone lengths, MMR's own types and the rules file",
         default=False,
     )
     Resample: EnumProperty(
         name="Chain Bone Lengths",
-        description="Where the joints of a chain sit. Keep copies the model's own spacing; Even puts one joint "
-                    "every equal step along the same line; Leaf keeps the model's joints and extends the last "
-                    "bone to the longest segment",
+        description="Where the joints of a chain sit. `Keep` copies the model's own spacing; `Even` puts one joint "
+                    "every equal step",
         items=[
             ('FILE', "From rules file", "Use the resample option in the rules file"),
             ('KEEP', "Keep model lengths", "Copy the model's own joint spacing"),
@@ -3554,13 +3623,15 @@ class RigifyChains(bpy.types.Operator):
             if overridden:
                 self.Preset = PRESET_CUSTOM
                 sync_group_fields(self)
-            # A preset whose families disagree inside one group cannot be shown by a single group dropdown, so
-            # the panel opens on Advanced - otherwise the first click on a group row would flatten a character
-            # that is deliberately mixed (Maruzensky: Hair0 a stub, Hair2 and Hair4 chains).
+            # A preset whose families disagree inside one group cannot be shown by a single group dropdown, so the
+            # group row says `Mixed` and this names the groups for the line above the rows. It used to switch the
+            # dialog to Advanced as well, which is what the user reported ("Advanced mode is always selected
+            # whenever pumpkin rig is run") - and it fired on nearly every model, since the rules table itself
+            # splits hair (`Hair0` a stub, `Hair2`/`Hair4` chains). `Mixed` closes the hole the switch was guarding:
+            # a group row that shows `Mixed` cannot be mistaken for one answer, and only a real click rewrites the
+            # families in it (`adopt_group_edits`).
             mixed = mixed_groups(self, TYPE_MODES.get((options.get("unmatched_families") or {}).get("type")))
-            self.Forced_Advanced = ", ".join(mixed)
-            if mixed:
-                self.Mode = 'ADVANCED'
+            self.Mixed_Groups = ", ".join(mixed)
             self.Preset_Note = label if len(label) < 120 else label[:117] + "..."
         finally:
             self.Populating = False
@@ -3581,15 +3652,22 @@ class RigifyChains(bpy.types.Operator):
         return ({item.family: item.mode for item in self.Families}, self.table_modes_from_rows())
 
     def invoke(self, context, event):
-        """Fill the family rows for this model and open the dialog.
+        """Fill the family rows for *this* model and open the dialog on a known state.
 
         The panel calls this operator with no properties at all (AddonPanels.py), so everything the run needs has
         to be settled here: which families this model has, and what the rules table says each of them gets. No
         preset is picked for the user - the list opens on `Default`, which *is* the rules table, and a preset only
         ever applies because somebody chose it (handoff 9bd).
+
+        **`reset_dialog_state` first, and the fill is `keep=False`.** Blender seeds a new invocation with the
+        operator's last-used property values, which for this operator means the *previous model's* dialog - its
+        mode, its preset and one rig type per family, in rows whose families share names across models. That is the
+        user's report in two halves ("Advanced mode is always selected", "some settings are retained from the first
+        run"), and it is why the opening state is now set here rather than inherited.
         """
+        reset_dialog_state(self)
         trace = Trace(self.Debug)
-        self._refresh_families(context, trace)
+        self._refresh_families(context, trace, keep=False)
         model, _meshes = self._find_model_armature(context, trace)
         # The dialog *states* a detected step, so it has to be the step the run takes: "Step: Wire only - ...
         # this is the state a run that stopped before wiring leaves behind" printed above a field reading `Full`
@@ -3667,9 +3745,13 @@ class RigifyChains(bpy.types.Operator):
             # so this cannot flatten a per-family choice (code review, handoff 9ai).
             adopt_group_edits(self)
             sync_group_fields(self)
+        # Each dropdown gets a one-word header, which is what the user asked for ("a few header texts would be nice
+        # to clarify what each dropdown does - Preset, Style") instead of the tooltip carrying it.
         top = column.row(align=True)
+        top.label(text="Mode")
         top.prop(self, "Mode", expand=True)
         preset = column.row(align=True)
+        preset.label(text="Preset")
         preset.prop(self, "Preset", text="")
         folder = preset.row(align=True)
         # `EXEC_DEFAULT`: this button carries its action, so it must run it rather than open the operator's own
@@ -3677,14 +3759,25 @@ class RigifyChains(bpy.types.Operator):
         folder.operator_context = 'EXEC_DEFAULT'
         props = folder.operator(RigifyChainRules.bl_idname, text="", icon='FILE_FOLDER')
         props.Action = 'SHOW'
-        preset_search = column.row(align=True)
-        preset_search.prop(self, "Preset_Filter", text="", icon='VIEWZOOM')
-        reload_row = preset_search.row(align=True)
-        reload_row.operator(RigifyChainPresetReload.bl_idname, text="", icon='FILE_REFRESH')
+        # The preset search box is commented out at the user's request ("search bar for the rules can be
+        # removed"); the reload button that used to sit inside it stays, now beside the folder. `Preset_Filter` is
+        # still a property - `preset_items` still reads it, so a scene or a script that sets it still narrows the
+        # list - it just has no row.
+        #
+        # preset_search = column.row(align=True)
+        # preset_search.prop(self, "Preset_Filter", text="", icon='VIEWZOOM')
+        # reload_row = preset_search.row(align=True)
+        folder.operator(RigifyChainPresetReload.bl_idname, text="", icon='FILE_REFRESH')
+        # Which groups hold more than one answer, recomputed here rather than read from `Mixed_Groups`: that
+        # property is only written when the rows are *filled* (`sync_preset` returns early once they came from the
+        # current preset), so a hand edit that makes a group uniform again - or splits another - left this line
+        # saying the old thing. Measured: after the Hair row was set to one answer, the line still named Hair.
+        mixed = mixed_groups(self, fallback_mode(self, context))
+        self.Mixed_Groups = ", ".join(mixed)
         # One short line at most. The detail (`preset <name> (...), N families different from the table`) is in
         # the trace, where it can be read at leisure; a dialog is not the place for a sentence.
-        if self.Forced_Advanced:
-            column.label(text="Multiple rig types per group (%s)" % self.Forced_Advanced)
+        if mixed:
+            column.label(text="Set per family: %s" % ", ".join(mixed))
         elif preset_mismatch(self):
             column.label(text="%d famil%s changed" % (preset_mismatch(self),
                                                       "y" if preset_mismatch(self) == 1 else "ies"))
@@ -3695,13 +3788,15 @@ class RigifyChains(bpy.types.Operator):
         # of it - its whole effect is visible in the viewport, so hiding it would hide the feature. The folder
         # button is the same one the presets use one row up: one file per style, editable by hand.
         style_row = column.row(align=True)
+        style_row.label(text="Style")
         style_row.prop(self, "Style", text="")
         style_folder = style_row.row(align=True)
         style_folder.operator(RigifyChainStyleFolder.bl_idname, text="", icon='FILE_FOLDER').Action = 'SHOW'
-        # the X-ray row sits with the style, because that is what it is about: how the rig is drawn. It is the
-        # whole rig (Blender has no scoped X-ray - see `execute`), and it is here rather than only in Blender's
-        # Object Properties panel because that one is overwritten by the style on the next run.
-        column.prop(self, "Xray")
+        # The X-ray row is commented out at the user's request ("X-ray dropdown can be removed"). The property and
+        # everything that reads it stay - a style still carries the answer, and a scene, a preset or a script can
+        # still set it - so this only takes the row off the dialog.
+        #
+        # column.prop(self, "Xray")
         style_save = column.row()
         style_save.operator(RigifyChainStyleSave.bl_idname, icon='FILE_TICK')
         column.separator()
@@ -3732,8 +3827,8 @@ class RigifyChains(bpy.types.Operator):
             if locked:
                 box.label(text="always: %s" % ", ".join("%s = %s" % (family, rig_type)
                                                         for family, rig_type in locked), icon='LOCKED')
-            if self.Forced_Advanced:
-                box.label(text="Advanced shows the per-family detail", icon='INFO')
+            if mixed:
+                box.label(text="Advanced sets %s family by family" % ", ".join(mixed), icon='INFO')
         column.separator()
         column.prop(self, "Chain_Layers")
         column.prop(self, "More_Options")
@@ -3972,13 +4067,18 @@ class RigifyChains(bpy.types.Operator):
         identity, identity_bone = model_identity(model)
         trace.info("model identity: %s%s" % (identity or "no Chara_ bone",
                                             " (%s)" % identity_bone if identity_bone else ""))
+        # A group row the user moved is flushed to the families here as well as in `draw`: the dropdown writes the
+        # group property and `draw` does the adopting, so pressing OK in the same event as the last change (a
+        # keyboard edit, a script) would otherwise run with the old per-family answers. It is a no-op when the
+        # snapshot is empty (a plain `bpy.ops` call) or when every row already agrees.
+        adopt_group_edits(self)
         self._refresh_families(context, trace)
         chosen, table_modes = self._chosen_modes(trace)
         fixed = dict(options.get("fixed_families") or {})
         trace.info("mode: %s, preset: %s" % (self.Mode, self.Preset))
-        if self.Forced_Advanced:
-            trace.info("Advanced was selected because this preset gives one group more than one answer: %s"
-                       % self.Forced_Advanced)
+        if self.Mixed_Groups:
+            trace.info("these groups hold more than one answer, so their row reads `Mixed`: %s"
+                       % self.Mixed_Groups)
         trace.info("fixed: %s" % (", ".join("%s=%s" % (family, rig_type)
                                             for family, rig_type in sorted(fixed.items())) or "none"))
         unchanged = [family for family, mode in chosen.items() if mode == table_modes.get(family)]
@@ -4382,11 +4482,8 @@ class RigifyChainStyleSave(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_style"
     bl_label = "Save style from this rig"
-    bl_description = ("Read the display settings of the generated rig in the scene - bone colours, widget sizes, "
-                      "the armature's display flags - and write them into one small JSON file in the styles "
-                      "folder, so they can be picked again. This is also how the shipped default was captured, "
-                      "so the two cannot drift. A style is display only: nothing it saves can change what the "
-                      "rig does")
+    bl_description = ("Save how the generated rig is displayed - bone colours, widget sizes, display flags - as a "
+                      "style file. Display only: it cannot change what the rig does")
     bl_options = {'REGISTER'}
 
     Name: StringProperty(
@@ -4450,8 +4547,8 @@ class RigifyChainStyleFolder(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_styles"
     bl_label = "Rig Display Styles"
-    bl_description = ("Open the folder holding one file per rig display style, or read it again after editing a "
-                      "file by hand. Copy the shipped one to make your own")
+    bl_description = ("Open the folder holding one file per rig display style, or read it again after editing one "
+                      "by hand")
     bl_options = {'REGISTER'}
 
     Action: EnumProperty(
@@ -4484,8 +4581,8 @@ class RigifyChainRules(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_rules"
     bl_label = "Rigify Chain Rules"
-    bl_description = ("Open the folder the presets and rules live in, write the rules file with the built-in "
-                      "defaults so it can be edited, or leave it alone")
+    bl_description = ("Open the folder holding the presets and the rules file, or write the rules file out with "
+                      "the built-in defaults so it can be edited")
     bl_options = {'REGISTER'}
 
     Action: EnumProperty(
