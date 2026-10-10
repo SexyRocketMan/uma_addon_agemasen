@@ -68,8 +68,12 @@ except ImportError:  # pragma: no cover - only when that file is deleted
 #: The tag reported by the operators and printed when drivers are hooked up, so a report can be told apart from
 #: one produced by a stale copy of this file (the same convention RigifyChains uses with its build tag). `look-2`
 #: stopped this file owning the settings table, `look-3` made the table follow the shader the *scene* chooses, and
-#: `look-4` made each material copy remember its own shader, so a scene can wear two at once.
-TAG = "look-4"
+#: `look-4` made each material copy remember its own shader, so a scene can wear two at once. **`look-5` is the
+#: 2.26 line**: a copy's own `group_hints` decide which group node is its shader (`shader_nodes` used to ask the
+#: *scene's*, so a character wearing a shader whose group is named differently was invisible to the control), the
+#: outline's material follows `outline.blend` like its group always did, and `Shading` guarantees the mode it found
+#: - so a panel or a run that still says `look-4` is running the code from before any of that.
+TAG = "look-5"
 
 # --- the shader's own names, from its manifest ----------------------------------------------------------
 #

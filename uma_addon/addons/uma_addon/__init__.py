@@ -75,9 +75,31 @@ def register():
     print("{} is installed.".format(__addon_name__))
     # Say which build this is: the Agemasen fork gets installed through several paths (an extension, a
     # scratch extension root, a legacy addons folder), and "which one is Blender running" is otherwise
-    # impossible to answer from inside Blender.
-    print("{} {}, loaded from {}".format(
-        __addon_name__, AGEMASEN_EDITION, os.path.dirname(os.path.abspath(__file__))))
+    # impossible to answer from inside Blender. The **version** is in here because "did my changes reach the copy
+    # Blender is running" is the first question of every bug report: a running Blender keeps the old module in
+    # `sys.modules`, so enabling the add-on again is not enough and the version printed here is the one that is
+    # actually loaded. The shader half has its own marker in the same spirit - `UmaShaderControl.TAG`, shown in the
+    # Shading panel and in every hook-up report (`look-5` is the 2.26 line).
+    print("{} {} {} loaded from {}".format(
+        __addon_name__, _manifest_version(), AGEMASEN_EDITION,
+        os.path.dirname(os.path.abspath(__file__))))
+
+
+def _manifest_version():
+    """The extension's own `version`, read from `blender_manifest.toml`; `"?"` when there is no manifest.
+
+    Deliberately a two-line parse rather than `tomllib`: this file has to import on every install shape, including a
+    legacy `scripts/addons` folder that has no manifest beside it, and a banner must never be the thing that fails.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    try:
+        with open(os.path.join(root, "blender_manifest.toml"), encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip().startswith("version"):
+                    return line.split("=", 1)[1].strip().strip('"\'')
+    except (OSError, IndexError):
+        pass
+    return "?"
 
 def unregister():
     bpy.types.VIEW3D_MT_object_context_menu.remove(View3dObject_menu)

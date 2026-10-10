@@ -472,6 +472,40 @@ def ensure_node_group(blend_file, group_name, manifest_id, adopt=True):
     return fresh[0] if fresh else None
 
 
+#: `context.mode` names a mode per data type ('EDIT_MESH'), where `bpy.ops.object.mode_set` wants the generic one
+#: ('EDIT'). Only the ones a run can *find* itself in are listed; anything else falls back to OBJECT.
+_MODE_SET_NAME = {"EDIT_MESH": "EDIT", "EDIT_ARMATURE": "EDIT", "EDIT_CURVE": "EDIT", "EDIT_SURFACE": "EDIT",
+                  "EDIT_META": "EDIT", "EDIT_LATTICE": "EDIT", "EDIT_TEXT": "EDIT", "POSE": "POSE",
+                  "OBJECT": "OBJECT"}
+
+
+def leave_mode_as_found(context, mode):
+    """Put the file back in the mode the run found it in. Returns whether it had to change anything.
+
+    A **guarantee at the top level** rather than a third place to fix: every step that switches modes is supposed to
+    switch back (`FaceNormals.split_face_into_object` does, including on its failure path), and this exists because
+    the user's report was "running Looper's shader takes the user into edit mode" long after that was fixed - so the
+    operator no longer trusts the steps inside it to get this right. Whatever happens in a run, the mode is the one
+    it started with when the run ends, and when that took fixing the console says so by name.
+
+    Nothing is silenced: a step that leaks a mode still prints its own line, and this one says which mode it had to
+    put back - which is what makes the next report of this answerable instead of a guess.
+    """
+    if context.mode == mode:
+        return False
+    wanted = _MODE_SET_NAME.get(mode, "OBJECT")
+    try:
+        bpy.ops.object.mode_set(mode=wanted)
+    except Exception as error:  # noqa: BLE001 - a courtesy to the user, never part of the result
+        print("[uma_addon] could not put the mode back to %s (%s: %s)" % (mode, type(error).__name__, error))
+        return False
+    if context.mode != mode:
+        print("[uma_addon] a run that started in %s has ended in %s" % (mode, context.mode))
+    else:
+        print("[uma_addon] put the mode back to %s, which a step inside the run had changed" % mode)
+    return True
+
+
 class ApplyShader(bpy.types.Operator):
     '''Apply uma shader to the model'''
     bl_idname = "uma.apply_shader"
@@ -483,6 +517,31 @@ class ApplyShader(bpy.types.Operator):
         return context.active_object and context.active_object.type == 'MESH' and len(context.selected_objects) == 1
 
     def execute(self, context: bpy.types.Context):
+        """One `Shading` pass, which leaves the mode exactly as it found it.
+
+        The mode a run ends in is the one thing a user notices when it goes wrong, and no step inside the run is
+        trusted to get it right: what is guaranteed here is the *outcome*.
+
+        A run that starts in Edit Mode is refused rather than attempted. Standard Blender behaviour for that is a
+        `poll` that fails, but a panel button that greys out says nothing to the user, so this says why - and the
+        refusal is not fussiness: measured, a run from Edit Mode gets as far as writing the outline's width attribute
+        on the *edit* mesh, where that attribute has no elements yet
+        (`TypeError: foreach_set(..) sequence length mismatch given 239832, needed 0` out of `contain_outline`), and
+        the shading is left half applied.
+        """
+        mode = context.mode
+        if mode != "OBJECT":
+            self.report({'ERROR'}, "%s needs Object Mode (%s is in %s): press Tab to leave it, then run it again"
+                        % (self.bl_label,
+                           context.active_object.name if context.active_object is not None else "the active object",
+                           mode))
+            return {'CANCELLED'}
+        try:
+            return self._apply(context)
+        finally:
+            leave_mode_as_found(context, mode)
+
+    def _apply(self, context: bpy.types.Context):
         obj = context.active_object
 
         # The outline containment is a scene setting, drawn under the Shading button in the UMA panel, and it
