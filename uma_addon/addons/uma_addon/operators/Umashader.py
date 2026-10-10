@@ -334,6 +334,29 @@ def library_masters(collection, manifest):
     return found
 
 
+def hide_library_carriers(collection):
+    """Keep a library's carrier objects out of renders. Returns how many were changed.
+
+    A library is a collection holding a sphere whose material *slots* are the master materials, plus the sun empty
+    the settings live on. The sphere is a **carrier**, not scenery: it arrives on every append, and upstream's ball
+    also carries a `Uma Outlines` geometry-nodes modifier so you can look at it to see the shell - their file ships
+    it render-visible, which means a 0.36 m ball two metres from the character turns up in renders (measured:
+    `shader_side_effects_check.py`). The preview is worth having in the *viewport*, so only the render flag is
+    touched here; a library that wants its helpers out of the viewport as well hides its own collection, which
+    Spork's does.
+
+    Applied to a library that is already in the scene as well, so a file shaded before this existed is put right on
+    its next `Shading` run instead of needing the library re-appended - and a user who wants the ball in a render can
+    still untick it by hand, which is why nothing here is asserted about it.
+    """
+    changed = 0
+    for obj in collection.all_objects:
+        if obj.type == 'MESH' and not obj.hide_render:
+            obj.hide_render = True
+            changed += 1
+    return changed
+
+
 def ensure_library(manifest, blend_file, context):
     """Make sure this scene holds *this* shader's library. Returns `(collection, {role: material}, notes)`.
 
@@ -349,9 +372,11 @@ def ensure_library(manifest, blend_file, context):
             continue
         source = collection.get(ShaderManifest.SOURCE_PROPERTY)
         if source == manifest["id"]:
+            hide_library_carriers(collection)
             return collection, library_masters(collection, manifest), []
         if source is None and manifest["id"] == ShaderManifest.DEFAULT_ID:
             collection[ShaderManifest.SOURCE_PROPERTY] = manifest["id"]
+            hide_library_carriers(collection)
             return collection, library_masters(collection, manifest), \
                 ["adopted the untagged %r as %s's library" % (collection.name, manifest["id"])]
 
@@ -367,6 +392,7 @@ def ensure_library(manifest, blend_file, context):
     fresh = [collection for collection in bpy.data.collections if collection not in before]
     for collection in fresh:
         collection[ShaderManifest.SOURCE_PROPERTY] = manifest["id"]
+        hide_library_carriers(collection)
     collection = fresh[0] if fresh else None
     if collection is None:
         return None, {}, ["%s was appended but is not in bpy.data.collections" % file_collection]
