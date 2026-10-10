@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Blender keeps a backup of a file it overwrote (X.blend1). uild_spork_library.py produced one when it was
+# re-run, and 2.26.1 shipped it by accident - committed and packed beside the real library. Never a source file.
+*.blend1
