@@ -1,6 +1,6 @@
 import bpy
 import os
-from bpy.props import PointerProperty
+from bpy.props import CollectionProperty, PointerProperty
 
 from .config import __addon_name__
 from .i18n.dictionary import dictionary
@@ -12,6 +12,7 @@ from ...common.i18n.i18n import load_dictionary
 from .panels.Menus import View3dObject_menu, View3dEdit_menu, View3dPose_menu, Outliner_menu
 from .operators.Physics import DampedTrackProperties
 from .operators.Properties import UmaScene, UmaObject, UmaArmature
+from .operators.RigOptions import BoneOptions, RigOptions, WeightBoneParentItem
 from .image.ImageManager import load_image, clear_image
 
 bl_info = {
@@ -32,6 +33,17 @@ _addon_properties = {
     },
     bpy.types.Object: {
         "uma_object": PointerProperty(type=UmaObject),
+        # The rig options and the weight-bone-parent table that used to come from MikuMikuRig, vendored here so a
+        # FULL Pumpkin Rig run no longer needs that add-on installed. Deliberately *our* names: MMR registers
+        # `object.mmr` and a collection of its own, and two add-ons may not claim the same property on a Blender
+        # type - so the two can be installed side by side (`operators/RigOptions.py`, `THIRD_PARTY.md`).
+        "uma_mmr": PointerProperty(type=RigOptions),
+        "uma_weight_bone_parent_fix": CollectionProperty(type=WeightBoneParentItem),
+    },
+    bpy.types.PoseBone: {
+        # MMR's per-bone group, which Controller.py reads for Set_constraints (two places: the toe constraint
+        # switch, and backing the vector up before the rig is rebuilt).
+        "uma_bone": PointerProperty(type=BoneOptions),
     },
     bpy.types.Armature: {
         "uma_armature": PointerProperty(type=UmaArmature, override={'LIBRARY_OVERRIDABLE'}),

@@ -4,7 +4,6 @@ from math import radians, pi ,sin, cos
 from mathutils import Vector
 import logging
 import re
-import addon_utils
 import numpy as np
 
 from ..config import __addon_name__
@@ -12,24 +11,13 @@ from ..config import __addon_name__
 from ..utils.Utils import assign_bone_to_collection
 from ..utils import compat
 
-# The settings this operator reads from MikuMikuRig's per object property group. It is written against
-# MikuMikuRig 4.5-2.00 LTS; older installs (3.85, for instance) are missing most of them, and asking for a
-# missing one raises AttributeError in the middle of building the rig - after the model has already been
-# refined. Checked up front instead, so the failure is a sentence rather than a traceback.
-REQUIRED_MMR_PROPERTIES = (
-    "Generate_controllers", "Only_meta_bones_are_generated", "MMR_Arm", "mmd_Armature",
-    "Bend_the_bones", "Bend_the_leg_bones", "Bend_angle_arm", "Bend_angle_leg",
-    "Disable_hand_fix", "Enable_finger_IK", "Disable_toe_position_constraint",
-    "Weight_bone_parent_fix", "Thumb_twist_aligns_with_the_world_Z_axis",
-    "Polar_target", "Use_ITASC_solver", "ORG_mode",
-    "Hide_mmd_skeleton", "Import_presets", "presets", "json_filepath", "f_pin",
-)
-
-
-def installed_mmr_version():
-    module = next((m for m in addon_utils.modules() if m.__name__ == "MikuMikuRig"), None)
-    version = getattr(module, "bl_info", {}).get("version") if module else None
-    return ".".join(str(part) for part in version) if version else None
+# The rig settings this operator reads, and the metarig template it appends, both ship with this add-on now
+# (`operators/RigOptions.py` and `operators/MMR_Rig.blend`). They are MikuMikuRig's - by 小峰峰哥 / XiaoFFGe,
+# GPL-3.0 - vendored so that a FULL run no longer needs that add-on installed; `THIRD_PARTY.md` at the extension
+# root has the attribution and `RigOptions.py` the details of what was taken and what changed. The names of the
+# settings are deliberately MMR's own: this file reads them in two dozen places, and only their container changed
+# (`object.uma_mmr`, ours, instead of `object.mmr`, MMR's, so the two add-ons can be installed side by side).
+from .RigOptions import TEMPLATE_OBJECT, RigOptions, fill_default_weight_bone_parent
 
 
 class MMRRig(bpy.types.Operator):
@@ -46,46 +34,33 @@ class MMRRig(bpy.types.Operator):
         context.active_object.select_set(True)
         uma_model = context.active_object
 
-        # Check the MikuMikuRig install before touching the model: everything below assumes the settings
-        # listed above exist, and refine_bone_structure() - the first thing it does - is not reversible.
-        mmr = getattr(context.object, "mmr", None)
+        # Since 2.30.0 the settings this operator reads and the metarig template it appends ship with this add-on
+        # (`operators/RigOptions.py`, `operators/MMR_Rig.blend`), so there is no second add-on to check for and no
+        # version to compare against: the two refusal messages that used to live here ("MikuMikuRig is not
+        # installed", "this tool needs 4.5-2.00 LTS") are gone with the dependency. What is still worth checking
+        # before touching the model is that the options are really on the object at all, because
+        # `refine_bone_structure()` - the first thing below - is not reversible.
+        mmr = RigOptions.of(context.object)
         if mmr is None:
-            message = ("MikuMikuRig is not installed (or not enabled), so this tool has no settings to "
-                       "read. Install MikuMikuRig 4.5-2.00 LTS and try again.")
-            self.report({'ERROR'}, message)
-            print(f"[uma_addon] {message}")
-            return {'CANCELLED'}
-
-        missing = [name for name in REQUIRED_MMR_PROPERTIES if not hasattr(mmr, name)]
-        if missing:
-            version = installed_mmr_version() or "of an unknown version"
-            message = (f"This tool needs MikuMikuRig 4.5-2.00 LTS, but the installed MikuMikuRig is "
-                       f"{version} and is missing {len(missing)} of the {len(REQUIRED_MMR_PROPERTIES)} "
-                       f"settings it uses ({', '.join(missing[:6])}"
-                       f"{', ...' if len(missing) > 6 else ''}). Update MikuMikuRig, then run this again - "
-                       f"nothing was changed.")
+            message = ("The rig options that ship with this add-on are not on this object, so this operator has "
+                       "nothing to read. Nothing was changed.")
             self.report({'ERROR'}, message)
             print(f"[uma_addon] {message}")
             return {'CANCELLED'}
 
         bpy.ops.uma.refine_bone_structure()
 
-        mod = next((m for m in addon_utils.modules() if m.__name__ == "MikuMikuRig"), None)
-        if mod is None:
-            self.report({'ERROR'},"MMR not found")
-            return {'CANCELLED'}
-
-        # 将当前文件夹路径和文件名组合成完整的文件路径
-        mmr_path = os.path.dirname(mod.__file__)
-        blend_file_path = os.path.join(mmr_path, "addons", "MikuMikuRig", "operators", "MMR_Rig.blend")
+        # The metarig template, from beside this file: MikuMikuRig's own `MMR_Rig.blend`, byte-identical to the one
+        # in releases 4.5-3.85 and 5.2.2 (`RigOptions.py` says where it came from and under which licence).
+        blend_file_path = RigOptions.template_path()
 
         # 设置追加参数
-        filepath = os.path.join(blend_file_path, "Object", "MMR_Rig_relative")
+        filepath = os.path.join(blend_file_path, "Object", TEMPLATE_OBJECT)
         directory = os.path.join(blend_file_path, "Object")
-        filename = "MMR_Rig_relative"
+        filename = TEMPLATE_OBJECT
 
         # 执行追加操作
-        if bpy.data.objects.get('MMR_Rig_relative') is None:
+        if bpy.data.objects.get(TEMPLATE_OBJECT) is None:
             bpy.ops.wm.append(
                 filepath=filepath,
                 directory=directory,
@@ -580,7 +555,7 @@ class MMRRig(bpy.types.Operator):
 
         arm_number = 0
 
-        if not RIG.mmr.Generate_controllers:
+        if not RIG.uma_mmr.Generate_controllers:
             # 变换
             Move_location(mmd_arm,RIG)
             # 缩放
@@ -720,7 +695,7 @@ class MMRRig(bpy.types.Operator):
             move_bone_a_to_b(RIG.name, RIG.name, "heel.02.R", 'foot.R', A_bone_Z_location=True)
 
             # 手掌修正
-            if not mmd_arm.mmr.Disable_hand_fix:
+            if not mmd_arm.uma_mmr.Disable_hand_fix:
                 for key, value in config.items():
                     if 'hand' in value:
                         if determine_side(value):
@@ -850,16 +825,16 @@ class MMRRig(bpy.types.Operator):
             if mmd_root:
                 if mmd_root.mmd_type:
                     if mmd_root.mmd_type == 'ROOT':
-                        items = mmd_arm.mmr_weight_bone_parent_fix
+                        items = mmd_arm.uma_weight_bone_parent_fix
                         # 列表长度是否为0
                         if len(items) == 0:
-                            mmd_arm.mmr.Weight_bone_parent_fix = True
-                            bpy.ops.mmr.import_default_weight_bone_parent(obj_name=mmd_arm.name)
+                            mmd_arm.uma_mmr.Weight_bone_parent_fix = True
+                            fill_default_weight_bone_parent(mmd_arm)
 
             # 权重骨骼修复
-            if mmd_arm.mmr.Weight_bone_parent_fix:
+            if mmd_arm.uma_mmr.Weight_bone_parent_fix:
 
-                items = mmd_arm.mmr_weight_bone_parent_fix
+                items = mmd_arm.uma_weight_bone_parent_fix
 
                 # 列表长度是否为0
                 if not len(items) == 0:
@@ -910,29 +885,29 @@ class MMRRig(bpy.types.Operator):
                         bone.rigify_parameters.make_extra_ik_control = False
 
             # 禁用脚趾位置约束
-            if mmd_arm.mmr.Disable_toe_position_constraint:
+            if mmd_arm.uma_mmr.Disable_toe_position_constraint:
 
                 toe_bones = ['toe.L', 'toe.R']
 
                 for n in toe_bones:
                     if n in RIG.pose.bones:
-                        RIG.pose.bones[n].mmr_bone.Set_constraints[1] = False
+                        RIG.pose.bones[n].uma_bone.Set_constraints[1] = False
 
         else:
-            mmd_arm = context.object.mmr.mmd_Armature
+            mmd_arm = context.object.uma_mmr.mmd_Armature
 
         if mmr.Only_meta_bones_are_generated:
             mmr.Only_meta_bones_are_generated = False
-            RIG.mmr.presets = mmd_arm.mmr.presets
-            RIG.mmr.Import_presets = mmd_arm.mmr.Import_presets
-            RIG.mmr.json_filepath = mmd_arm.mmr.json_filepath
-            RIG.mmr.Enable_finger_IK = mmd_arm.mmr.Enable_finger_IK
-            RIG.mmr.Generate_controllers = True
-            RIG.mmr.mmd_Armature = mmd_arm
+            RIG.uma_mmr.presets = mmd_arm.uma_mmr.presets
+            RIG.uma_mmr.Import_presets = mmd_arm.uma_mmr.Import_presets
+            RIG.uma_mmr.json_filepath = mmd_arm.uma_mmr.json_filepath
+            RIG.uma_mmr.Enable_finger_IK = mmd_arm.uma_mmr.Enable_finger_IK
+            RIG.uma_mmr.Generate_controllers = True
+            RIG.uma_mmr.mmd_Armature = mmd_arm
             mmd_arm.matrix_world = mmd_arm_matrix  # 还原位置
             RIG.matrix_world = mmd_arm_matrix  # 吸附位置
             RIG.show_in_front = True # 在前面
-            RIG.mmr.MMR_Arm = True
+            RIG.uma_mmr.MMR_Arm = True
             return {'FINISHED'}
 
         # 更新场景
@@ -943,7 +918,7 @@ class MMRRig(bpy.types.Operator):
         # 备份所有骨骼的Set_constraints
         for bone in RIG.pose.bones:
             lists = []
-            for item in bone.mmr_bone.Set_constraints:
+            for item in bone.uma_bone.Set_constraints:
                 lists.append(item)
 
             ct_op[bone.name] = lists
@@ -1415,9 +1390,10 @@ class MMRRig(bpy.types.Operator):
 
         rigify.show_in_front = True # 在前面
 
-        # MikuMikuRig 3.85 has no "Upper_body_linkage" switch (4.5-2.00 LTS does), and reading it straight
-        # away is what made this operator fail with an AttributeError. Where it is missing, keep the neck
-        # and head following the torso, which is what having the option switched off does.
+        # `Upper_body_linkage` is one of MMR's own switches and it ships in `RigOptions` now, at MMR's default
+        # (off, which keeps neck and head following the torso). Read through `getattr` all the same: this ran
+        # against MMR 3.85 for a long time, where the property did not exist at all, and one missing attribute in
+        # the middle of rigging is not a failure worth reintroducing for a lookup that costs nothing.
         upper_body_linkage = getattr(mmr, "Upper_body_linkage", False)
         if upper_body_linkage:
             rigify.pose.bones["torso"]["neck_follow"] = 0

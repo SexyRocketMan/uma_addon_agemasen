@@ -104,10 +104,21 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-62"
+BUILD_TAG = "chains-63"
 BUILD = BUILD_TAG + (
-    ": 2.29.0 - a rig run is up to 1.8x faster, with an identical rig, because rigify's per-bone mode switching is "
-    "batched. Rigify copies a bone by creating it in edit mode, switching to object mode to copy its pose properties, "
+    ": 2.30.0 - MikuMikuRig is no longer a dependency. The three things a FULL run used to need from it ship with "
+    "this add-on now: the metarig template (`operators/MMR_Rig.blend`, byte-identical to MMR's own file in releases "
+    "4.5-3.85 and 5.2.2 - sha256 `12374F03DAA8EBA5...`, 285,696 bytes), the 22 settings the rig pipeline reads "
+    "(`operators/RigOptions.py`, MMR's own names, types and defaults, on `object.uma_mmr` and `PoseBone.uma_bone` "
+    "instead of MMR's own properties so both add-ons can be installed at once), and the one MMR operator it called, "
+    "now a function (`fill_default_weight_bone_parent`). Attribution and the list of modifications are in "
+    "`THIRD_PARTY.md` (MikuMikuRig by 小峰峰哥 / XiaoFFGe, GPL-3.0 - the same licence as this add-on), and `LICENSE` "
+    "ships beside it. Measured with MMR **disabled**: the run finishes and produces the very same rig - fingerprint "
+    "`7a6199722a24c832c1e4e49eb3ff67ad`, identical to the 2.29.0 build with MMR installed and used "
+    "(`mmr_freedom_check.py`, 16 checks), and the pre-vendoring build re-run from its own tag reproduces that hash "
+    "too. The two refusal messages that named an MMR version are gone with the dependency. Before that: 2.29.0 - a "
+    "rig run is up to 1.8x faster, with an identical rig, because rigify's per-bone mode switching is batched. "
+    "Rigify copies a bone by creating it in edit mode, switching to object mode to copy its pose properties, "
     "and switching back - twice per bone, 204 bones, 408 dependency-graph flushes per run (`rigify/utils/bones.py`, "
     "*\"LEGACY ONLY, DON'T USE\"*, and `utils/__init__.py` binds the plain name every rig type imports to exactly that "
     "function). A flush costs what the file costs: measured, 7.9 ms in a file with no rig and 50-58 ms in one that "
@@ -4219,11 +4230,14 @@ class RigifyChains(bpy.types.Operator):
         armatures_before = {obj.name for obj in bpy.data.objects if obj.type == 'ARMATURE'}
 
         if self.Step == 'FULL':
-            mmr = getattr(model, "mmr", None)
+            # The metarig template and the settings used to come from MikuMikuRig, and this step used to refuse
+            # without it ("MikuMikuRig is not installed, so there is no controller to add to"). Both ship with this
+            # add-on now - `operators/RigOptions.py` and `operators/MMR_Rig.blend` - so there is nothing to be
+            # missing; what is left to check is the leftover below, which is about a *file*, not an install.
+            mmr = getattr(model, "uma_mmr", None)
             if mmr is None:
-                self.report({'ERROR'}, "MikuMikuRig is not installed, so there is no controller to add "
-                                       "to. Use the rules with MMR installed, or Step = Wire only. [%s]"
-                            % BUILD_TAG)
+                self.report({'ERROR'}, "The rig options that ship with this add-on are not on this object, so "
+                                       "there is no controller to add to. Nothing was changed. [%s]" % BUILD_TAG)
                 return {'CANCELLED'}
             # MMR appends its metarig template only when no object of that name exists (`Controller.py:88`), and
             # rigify consumes the template when a run finishes (`:1034-1037`) - so a finished run leaves nothing

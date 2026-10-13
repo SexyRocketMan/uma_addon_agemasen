@@ -9,7 +9,7 @@ Agemasen Edition" fork of umaviewer).
 It is a clean rebuild. The upstream addon at commit `a6de9e1` is the base. Against that base, this edition
 adds three things:
 
-* **one place to build the rig**: *Pumpkin Rig Setup* runs MikuMikuRig's generation and then adds rigify
+* **one place to build the rig**: *Pumpkin Rig Setup* runs the MikuMikuRig pipeline that ships with this add-on and then adds rigify
   chains for the hair, ears, skirt, chest, tail and ribbon bones, typed by a rules table (with presets of your
   own as opt-in overrides, and drawn in the animator's own display style);
 * **one place to set the look**: the 18 shader settings live on the sun empty, a per-character override sits on
@@ -116,8 +116,7 @@ mmd_tools的导入功能。
 在场景帧范围内，把选中模型原本就有的FK动作烘焙到上述 *生成 IK* 操作生成的IK控制器上。
 
 **为赛马娘生成控制器 Generate controller for umamusume**  
-如果你安装了MikuMikuRig 4.5-2.00 LTS，在MMR的主面板下就会出现这个按钮，点击后可以直接为赛马娘生成控制器。
-如果你先安装此插件，后安装MMR，需要重启此插件，这个按钮才能显示。
+**不再需要安装 MikuMikuRig**：元骨骼模板和设置已随本插件一起提供，点击即可为赛马娘生成控制器。模板与设置来自 MikuMikuRig（作者 小峰峰哥 / XiaoFFGe，GPL-3.0），来源、改动与署名见 `THIRD_PARTY.md`。如果你仍然安装了 MMR，两个插件可以并存。
 >https://github.com/XiaoFFGe/MikuMikuRig  
 >https://wwcb.lanzn.com/b00taqmfwb 密码:6666
 
