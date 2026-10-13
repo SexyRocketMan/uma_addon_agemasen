@@ -21,9 +21,14 @@ what is theirs, what is ours, and what was changed.
 | the rig pipeline | `uma_addon/addons/uma_addon/operators/Controller.py` | **modified fork** of MMR's `operators/RIG.py` (1 975 lines against their 2 022). It has been a fork of this add-on for a long time, not something this vendoring introduced; the refusals that used to name an MMR version were removed when the dependency was |
 
 Nothing else of MMR is included: not its panels, not its physics, retarget, preset or animation-copy modules, not its
-other metarig templates, and none of its UI. A FULL `Pumpkin Rig` run works with MikuMikuRig **absent** - measured,
-with the same rig fingerprint as when it was installed and used (`mmr_freedom_check.py`, 16 checks) - and if it is
-installed anyway, both add-ons coexist because this one never claims a property name of theirs.
+other metarig templates, and none of its UI. **One caveat on that sentence**, because it is a statement about
+provenance and should be exact: `Controller.py` was measured to be a fork of MMR's `operators/RIG.py` (same function
+names, 49 `mode_set` call sites against their 50), and other files in this add-on carry code in the same shape from the
+same lineage - Chinese comments and MMR-era helpers, `AddonOperators.py` among them. What this vendoring *added* is the
+row above; what was already here is the fork, and it is GPL-3.0 either way because that is what MMR is and what this
+add-on is. A FULL `Pumpkin Rig` run works with MikuMikuRig **absent** - measured, with the same rig fingerprint as when
+it was installed and used (`mmr_freedom_check.py`, 16 checks) - and if it is installed anyway, both add-ons coexist
+because this one never claims a property name of theirs.
 
 ## Looper - `Umashaders` 0.2.6 and the bundled `Umashaders.blend`
 
