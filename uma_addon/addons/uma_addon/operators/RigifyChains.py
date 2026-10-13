@@ -104,9 +104,18 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-63"
+BUILD_TAG = "chains-64"
 BUILD = BUILD_TAG + (
-    ": 2.30.0 - MikuMikuRig is no longer a dependency. The three things a FULL run used to need from it ship with "
+    ": 2.30.1 - the run says where its own report is, and stops drawing Blender's cursor percentage. The user: *\"I "
+    "couldn't see the progress bar or the steps logs in the console - is this intentional? I could only see the "
+    "cursor change to some numbers.\"* The numbers *were* the progress bar: `wm.progress_begin/update` draws nothing "
+    "but a numeric percentage at the mouse cursor, which reads as a glitch rather than as progress. It is off now "
+    "(`Progress.CURSOR_BAR`, one constant, and the user's own blendcap add-on documents the same choice at "
+    "`operators_retarget.py:787`), the status line carries the step, its note and the same percentage instead, the one "
+    "step that cannot show progress says so in that line (\"the long one: no progress inside this step\"), and the "
+    "trace opens by saying that the block *is* the whole run and that the same lines are printed to the console "
+    "(Window > Toggle System Console) - which is where the missing step logs were, since a GUI-launched Windows "
+    "Blender has no console at all. Before that: 2.30.0 - MikuMikuRig is no longer a dependency. The three things a FULL run used to need from it ship with "
     "this add-on now: the metarig template (`operators/MMR_Rig.blend`, byte-identical to MMR's own file in releases "
     "4.5-3.85 and 5.2.2 - sha256 `12374F03DAA8EBA5...`, 285,696 bytes), the 22 settings the rig pipeline reads "
     "(`operators/RigOptions.py`, MMR's own names, types and defaults, on `object.uma_mmr` and `PoseBone.uma_bone` "
@@ -1445,6 +1454,11 @@ class Trace:
         text.write("rigify chains trace, %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
         text.write("build: %s\n" % BUILD)
         text.write("module: %s\n" % __file__)
+        # Where to find this report, said in the report itself: a Windows Blender launched from the GUI has no
+        # console, so the same lines that are printed are invisible unless the user opens one - and the user went
+        # looking for them and found neither (2.30.1).
+        text.write("this block is the whole run; the same lines are printed to the console "
+                   "(Window > Toggle System Console)\n")
         try:
             text.write("module modified: %s\n" % time.strftime(
                 "%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(__file__))))
@@ -3900,6 +3914,13 @@ class RigifyChains(bpy.types.Operator):
             more.separator()
             more.prop(self, "Rules_File")
             more.operator(RigifyChainTraceSave.bl_idname, icon='FILE_TICK')
+            # Where a run's own record is, said where a user goes looking for it. The status bar carries the current
+            # step while a run is going; everything else - every step, every check, the `timings:` line - is in this
+            # text block, which the button above writes out as a file. Blender's window-manager progress bar is
+            # deliberately *not* used since 2.30.1: it draws a bare percentage at the mouse cursor, which reads as a
+            # glitch rather than as progress (`operators/Progress.py`, `CURSOR_BAR`).
+            more.label(text="Progress is on the status bar while it runs; the report is this block: %s"
+                            % TRACE_TEXT_NAME, icon='INFO')
 
     def _family_data(self):
         """The current family choices as `family=mode;...`, for the save-as-preset button to carry."""
@@ -4071,7 +4092,7 @@ class RigifyChains(bpy.types.Operator):
         if steps:
             steps.plan(("the stale check", 0.2),
                        ("find the model, rules, families and chains", 1.0),
-                       ("generate the rig (MMR + rigify)", 20.0),
+                       ("generate the rig (MMR + rigify)", 20.0, "the long one: no progress inside this step"),
                        ("wire the model to the chains", 3.0),
                        ("collections, UI rows and the style", 1.0))
         marks = []

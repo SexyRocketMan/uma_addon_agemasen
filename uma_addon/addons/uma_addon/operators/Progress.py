@@ -91,6 +91,13 @@ def _areas():
     return getattr(context, "workspace", None), getattr(context, "window_manager", None)
 
 
+#: `True` brings back `wm.progress_begin/update/end` - the numeric percentage Blender draws at the mouse cursor.
+#: Off by default since 2.30.1: the status line says more (the step, its note, the same percentage) and does not look
+#: like a glitch. The blendcap add-on reached the same conclusion on its own (`operators_retarget.py:787`:
+#: *"No wm.progress_begin/update/end calls - those cause Blender to show a numeric percentage in the cursor"*).
+CURSOR_BAR = False
+
+
 class Steps:
     """One run's steps: each timed, each reported, and a bar that moves as they pass.
 
@@ -111,6 +118,7 @@ class Steps:
         self.started = time.perf_counter()
         self.steps = []                    # [(label, seconds, nested)] - nested ones are part of their parent's
         self.plan_steps = []               # [(label, weight)]
+        self.plan_notes = {}               # label -> the note the status line adds while that step runs
         self._last_mark = self.started
         self._open = {}                    # label -> perf_counter at entry
         self._depth = 0                    # how many phases are open, so a nested one can be marked as such
@@ -120,41 +128,63 @@ class Steps:
 
     # --- the plan ---------------------------------------------------------------------------------------
     def plan(self, *pairs):
-        """Declare the run's steps as `(label, weight)` pairs, so the bar has something to be a fraction of."""
-        self.plan_steps = [(label, float(weight)) for label, weight in pairs]
+        """Declare the run's steps as `(label, weight)` or `(label, weight, note)` triples.
+
+        The weights are what the *status line's* percentage is a fraction of, and the optional note is appended to
+        that line while the step runs - it exists for the one step that cannot show progress at all, so a user waiting
+        on it is told that instead of watching for movement that will not come.
+        """
+        self.plan_steps = []
+        self.plan_notes = {}
+        for entry in pairs:
+            label, weight = entry[0], float(entry[1])
+            self.plan_steps.append((label, weight))
+            if len(entry) > 2 and entry[2]:
+                self.plan_notes[label] = str(entry[2])
         self._plan_total = sum(weight for _label, weight in self.plan_steps) or 1.0
-        _workspace, wm = _areas()
-        if wm is not None:
-            try:
-                wm.progress_begin(0, 100)
-                self._bar = True
-            except Exception:  # noqa: BLE001 - a bar is never worth an exception
-                self._bar = False
+        # The window manager's own progress bar is deliberately *not* used: `wm.progress_begin/update` draws nothing
+        # but a numeric percentage at the mouse cursor, which is easy to mistake for a glitch and says less than the
+        # status line does (measured against the user's own report - *"I could only see the cursor change to some
+        # numbers"* - and the same choice the blendcap add-on documents at `operators_retarget.py:787`). The status
+        # line below carries the step, its note and the same percentage, and it stays put for the whole step.
+        # Set `CURSOR_BAR = True` to bring the cursor readout back.
+        if CURSOR_BAR:
+            _workspace, wm = _areas()
+            if wm is not None:
+                try:
+                    wm.progress_begin(0, 100)
+                    self._bar = True
+                except Exception:  # noqa: BLE001 - a bar is never worth an exception
+                    self._bar = False
         return self
 
     def _advance(self, label):
-        """Move the bar to wherever `label` sits in the plan, and put the label in the status bar."""
+        """Move the status line to wherever `label` sits in the plan, and say what the step is."""
         weight = dict(self.plan_steps).get(label)
         if weight is not None:
             self._done_weight += weight
         fraction = min(1.0, self._done_weight / self._plan_total)
-        self.status(label, fraction)
+        self.status(label, fraction, self.plan_notes.get(label))
+        if not self._bar:
+            return
         _workspace, wm = _areas()
-        if wm is None or not self._bar:
+        if wm is None:
             return
         try:
             wm.progress_update(int(fraction * 100))
         except Exception:  # noqa: BLE001
             pass
 
-    def status(self, text, fraction=None):
-        """The status bar line: what is happening now, and how far along, when a plan says so."""
+    def status(self, text, fraction=None, note=None):
+        """The status bar line: what is happening now, how far along, and why it may look stuck."""
         workspace, _wm = _areas()
         if workspace is None:
             return
         line = "%s: %s" % (self.title, text)
         if fraction is not None:
             line = "%s  [%d%%]" % (line, int(fraction * 100))
+        if note:
+            line = "%s - %s" % (line, note)
         try:
             workspace.status_text_set(line)
         except Exception:  # noqa: BLE001
