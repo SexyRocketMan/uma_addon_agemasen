@@ -111,8 +111,15 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 RIG_VERSION = "v2"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-65"
+BUILD_TAG = "chains-66"
 BUILD = BUILD_TAG + (
+    ": 2.31.1 - the material copies stop climbing and start saying what they are. A model shaded three times used to "
+    "end up with `.002`/`.003` on the same slot: each run copied the slot's material again and Blender handed the new "
+    "copy the next free suffix while the old one still existed. A slot already wearing this shader's copy is reused "
+    "now, and every copy is named `<the model's own name> [<part>]` - derived, so it cannot climb: three runs, "
+    "identical names, the file's material count flat (`material_naming_check.py`, 9 checks). The `.001` suffixes "
+    "*before* the first run are the model's own - a PMX may carry several materials with one name and `mmd_tools` "
+    "disambiguates them at import (measured with `material_copies_check.py`). Before that: "
     ": 2.31.0 - the small requests, and the build tag stops being the rig's version. Pumpkin Rig has its own version "
     "now (`RIG_VERSION = \"v2\"`, right above `BUILD_TAG`, one edit to bump): the panel says `Pumpkin Rig Setup (v2)`, "
     "a message says `[Pumpkin Rig v2]`, and `BUILD_TAG` stays what it always was - the identifier the trace, the fleet "

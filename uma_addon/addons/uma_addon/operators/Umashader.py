@@ -661,17 +661,34 @@ class ApplyShader(bpy.types.Operator):
                     return {'CANCELLED'}
 
                 # 对材质进行深拷贝并替换
-                new_mat = uma_shader.copy()
+                #
+                # Reuse before copying. A slot that is already wearing *this* shader's copy needs nothing done to it
+                # but the texture binding below, and copying again is what made the names climb: the new copy was
+                # named after the old one while the old one still existed, so Blender handed it the next free suffix
+                # and a model shaded three times ended up with `.002`/`.003` (measured,
+                # `material_copies_check.py`). Re-running Shading is now idempotent: same material object, same name,
+                # no orphans. The tag is `uma_shader_source`, set below and on every copy this add-on makes.
                 old_mat_name = old_mat.name
-                if old_mat.users <= 1:
-                    bpy.data.materials.remove(old_mat)
-                new_mat.name = old_mat_name
-                # 记录这份拷贝来自哪个 shader：a scene can wear two shaders, and the control has to know which one
-                # each copy belongs to - its settings table and the sun its globals live on both follow from this
-                # (`UmaShaderControl.shader_of`). Without the tag a copy can only be guessed at from the node group
-                # it drives, which is the fallback for files shaded before the tag existed.
-                new_mat[ShaderManifest.SOURCE_PROPERTY] = manifest["id"]
-                slot.material = new_mat
+                reused = old_mat.get(ShaderManifest.SOURCE_PROPERTY) == manifest["id"]
+                if reused:
+                    new_mat = old_mat
+                else:
+                    new_mat = uma_shader.copy()
+                    if old_mat.users <= 1:
+                        bpy.data.materials.remove(old_mat)
+                    # 记录这份拷贝来自哪个 shader：a scene can wear two shaders, and the control has to know which
+                    # one each copy belongs to - its settings table and the sun its globals live on both follow from
+                    # this (`UmaShaderControl.shader_of`). Without the tag a copy can only be guessed at from the node
+                    # group it drives, which is the fallback for files shaded before the tag existed.
+                    new_mat[ShaderManifest.SOURCE_PROPERTY] = manifest["id"]
+                    slot.material = new_mat
+                # A name that says what the material is for: the model's own name plus the part this run matched it
+                # as (`bdy`, `hair`, `face`, ...). Derived rather than allocated, so it stops moving - and stripped
+                # of a suffix this same run already added, or a third Shading run would read `mtl_x [hair] [hair]`.
+                # Only *our* suffix is stripped: a model material legitimately ending in `[something]` keeps it.
+                suffix = " [%s]" % part_type
+                base = old_mat_name[:-len(suffix)] if old_mat_name.endswith(suffix) else old_mat_name
+                new_mat.name = base + suffix
                 nodes = new_mat.node_tree.nodes
 
                 # 贴图：该部位自己的配方，没有就用手册里的 default
