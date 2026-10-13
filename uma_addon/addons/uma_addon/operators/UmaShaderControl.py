@@ -1549,12 +1549,12 @@ def draw_shading_control(layout, context):
         layout.label(text=problem, icon='ERROR')
 
     # Where the shader's shading *direction* comes from: the Uma Sun empty and nowhere else, so aiming it at the
-    # scene's own key light is what saves aligning it by hand. (2.23.0 also patched the shader's world-light option
-    # here; 2.23.1 took that back out - see docs/WORLD_LIGHT_INFLUENCE.md - so what is left touches no shader.)
+    # scene's own key light is what saves aligning it by hand. The button only, since 2.31.0: "aim it on every Shading
+    # run" was a scene setting nobody used (the user: *"it's not used by anyone"*), so it is gone and the aim happens
+    # when a user asks for it. (2.23.0 also patched the shader's world-light option here; 2.23.1 took that back out -
+    # see docs/WORLD_LIGHT_INFLUENCE.md - so what is left touches no shader.)
     if WorldLight is not None and scene_props is not None:
-        aim = layout.row(align=True)
-        aim.prop(scene_props, "sun_follow_key_light", text="Aim the Uma Sun at the key light")
-        aim.operator(ShaderControlAimSun.bl_idname, text="", icon='TRACKER')
+        layout.operator(ShaderControlAimSun.bl_idname, text="Aim the Uma Sun at the key light", icon='TRACKER')
 
     row = layout.row(align=True)
     row.operator(ShaderControlHook.bl_idname, icon='DRIVER')

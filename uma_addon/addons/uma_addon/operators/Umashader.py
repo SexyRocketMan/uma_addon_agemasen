@@ -603,7 +603,6 @@ class ApplyShader(bpy.types.Operator):
                        ("copy materials and bind textures", 4.0),
                        ("the outline shell", 1.0),
                        ("hook up the drivers", 8.0),
-                       ("aim the sun", 0.5),
                        ("the face-normal transfer", 3.0))
 
         # 追加 Icosphere of Materials Collection
@@ -770,26 +769,10 @@ class ApplyShader(bpy.types.Operator):
         # about *his* shader rather than our fork of it. What is left is the aiming, which touches no shader datablock.
         scene = getattr(context.scene, "uma_scene", None)
 
-        # Aiming the Uma Sun at the scene's own key light, when the user asked for it: the shader's direction comes
-        # from that empty and nowhere else, so this is what keeps it in agreement with the scene instead of asking
-        # anybody to align it by hand.
-        if WorldLight is not None and bool(getattr(scene, "sun_follow_key_light", False)) and hook_shader_control:
-            try:
-                aim = WorldLight.aim_at_key_light(context, bpy.data.objects.get("Uma Sun [DO NOT DELETE]")
-                                                  or next((entry for entry in bpy.data.objects
-                                                           if entry.type == 'EMPTY'
-                                                           and entry.name.startswith("Uma Sun")), None))
-                if aim.get("aimed") and aim.get("changed"):
-                    print("[uma_addon] %s: the sun empty was turned onto %s (%s)"
-                          % (WORLD_LIGHT_TAG, aim.get("light"),
-                             ", ".join("%.2f" % value for value in aim.get("rotation", []))))
-                elif not aim.get("aimed"):
-                    print("[uma_addon] %s: not aimed: %s" % (WORLD_LIGHT_TAG, aim.get("reason")))
-            except Exception as error:  # noqa: BLE001 - never take the shading run down
-                print("[uma_addon] %s: could not aim the sun empty (%s: %s)"
-                      % (WORLD_LIGHT_TAG, type(error).__name__, error))
-        if steps:
-            steps.mark("aim the sun")
+        # The Shading run no longer aims the sun: the scene setting that made it do so was removed in 2.31.0 (the
+        # user: *"it's not used by anyone"*), and the button in the shading panel does it on demand
+        # (`operators/WorldLight.py` is untouched - `aim_at_key_light()` is what both the button and this comment
+        # refer to).
 
 
         # The face normals step (see operators/FaceNormals.py): a hidden static copy of the face plus a data

@@ -362,17 +362,19 @@ class ControllerPanel(BasePanel, bpy.types.Panel):
         # MMR's own controller button, moved here from MMR's panel (the user's request, 2.23.1): it is the first step
         # of building a controller, and every button that does that now sits in one place, in the order they are used.
         layout.operator(MMRRig.bl_idname, icon_value=get_image_id("ctrl"))
+        # Pumpkin Rig directly under it (the user's request, 2.31.0): the two are the same job in two halves - the
+        # controller above, then the chains and the display style on top of it - and a user alternates between them,
+        # so the twist / IK / bake buttons, which act on a *finished* rig, now come after both.
+        if RigifyChains is not None:
+            layout.operator(RigifyChains.bl_idname, icon='MOD_ARMATURE')
+            if RigifyChainRules is not None:
+                layout.operator(RigifyChainRules.bl_idname, icon='PRESET')
         if obj_props:
             layout.operator(ToggleTwistConstraints.bl_idname, text="Auto Twist", depress=obj_props.auto_twist_bones)
         else:
             layout.operator(ToggleTwistConstraints.bl_idname, text="Auto Twist")
         layout.operator(GenerateIK.bl_idname, icon='BONE_DATA')
         layout.operator(BakeFKtoIK.bl_idname, icon='SNAP_ON')
-        if RigifyChains is not None:
-            # the fork's controller: MMR's rig above, plus the hair / cloth / tail chains MMR leaves alone
-            layout.operator(RigifyChains.bl_idname, icon='MOD_ARMATURE')
-            if RigifyChainRules is not None:
-                layout.operator(RigifyChainRules.bl_idname, icon='PRESET')
         if CollapseRig is not None:
             layout.operator(CollapseRig.bl_idname, icon='ARMATURE_DATA')
 
@@ -409,6 +411,10 @@ class ShadingLookPanel(BasePanel, bpy.types.Panel):
         if face_normals_module is not None:
             row.operator(FaceNormalsApply.bl_idname, text="", icon='DRIVER')
             row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
+        # The community joke, asked for by name and wired to nothing at all (2.31.0): a checkbox, so it looks like the
+        # switch above it, and `Properties.py` says in its own description that nothing reads it. Kept because it was
+        # requested; if it ever needs to *do* something, that is a different conversation.
+        layout.prop(scene_props, "pregnancy_toggle")
 
         if draw_shading_control is None:
             layout.label(text="UmaShaderControl.py is missing", icon='ERROR')

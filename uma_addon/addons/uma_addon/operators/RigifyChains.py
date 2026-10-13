@@ -104,8 +104,22 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-64"
+# **The Pumpkin Rig's own version** - what a user sees. Bump it whenever the *rig* changes (a new chain type, a new
+# wiring, a different bone layout); it is deliberately separate from `BUILD_TAG` below, which identifies the *build*
+# for the trace, the fleet probe and the stale-code guard, and moves on every commit that touches this file. One
+# place, so a bump is one edit: this line, and whatever the message being changed happens to say.
+RIG_VERSION = "v2"
+RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
+
+BUILD_TAG = "chains-65"
 BUILD = BUILD_TAG + (
+    ": 2.31.0 - the small requests, and the build tag stops being the rig's version. Pumpkin Rig has its own version "
+    "now (`RIG_VERSION = \"v2\"`, right above `BUILD_TAG`, one edit to bump): the panel says `Pumpkin Rig Setup (v2)`, "
+    "a message says `[Pumpkin Rig v2]`, and `BUILD_TAG` stays what it always was - the identifier the trace, the fleet "
+    "probe and the stale-code guard read. The `Aim the Uma Sun at the key light` *setting* is gone (the user: *\"it's "
+    "not used by anyone\"*) and the button that does it on demand stays; Pumpkin Rig moved directly under `Generate "
+    "controller for umamusume`, because those two are the same job in two halves; and the community's `Pregnancy "
+    "Toggle` sits under `Face Normal Transfer`, wired to nothing at all, as asked. Before that: "
     ": 2.30.1 - the run says where its own report is, and stops drawing Blender's cursor percentage. The user: *\"I "
     "couldn't see the progress bar or the steps logs in the console - is this intentional? I could only see the "
     "cursor change to some numbers.\"* The numbers *were* the progress bar: `wm.progress_begin/update` draws nothing "
@@ -274,7 +288,7 @@ BUILD = BUILD_TAG + (
 BASIC_TAIL_PARAMETERS = {"copy_rotation_axes": (True, True, True)}
 
 # Printed once per module load, so the console shows whether a reload actually picked up an edited file.
-print("[uma_rigify_chains] %s loaded" % BUILD_TAG)
+print("[uma_rigify_chains] %s loaded (build %s)" % (RIG_TAG, BUILD_TAG))
 
 # ---- is the module in memory still the file on disk? ---------------------------------------------------------
 # Blender keeps a loaded add-on in memory: an edited file on disk changes nothing until the extension is
@@ -2050,7 +2064,7 @@ class RigifyChains(bpy.types.Operator):
     """Rigify the model's hair, cloth and tail chains as well as the body"""
 
     bl_idname = "uma.rigify_chains"
-    bl_label = "Pumpkin Rig Setup (%s)" % BUILD_TAG
+    bl_label = "Pumpkin Rig Setup (%s)" % RIG_VERSION
     bl_description = ("MMR controller plus rigify chains for hair, cloth and tail, on the metarig the model is then "
                       "made to follow. Undoable")
     bl_options = {'REGISTER', 'UNDO'}
@@ -4052,7 +4066,7 @@ class RigifyChains(bpy.types.Operator):
         text_name = trace.save()
         self.report({'INFO'}, "[%s] %s is already rigged - nothing to generate or attach, so the display was "
                               "re-applied. Use Ctrl+Z or re-import the model to rig it again from scratch. "
-                              "Trace: %s" % (BUILD_TAG, model.name, text_name))
+                              "Trace: %s" % (RIG_TAG, model.name, text_name))
         return {'FINISHED'}
 
     # --------------------------------------------------------------------------------------------------
@@ -4073,7 +4087,7 @@ class RigifyChains(bpy.types.Operator):
 
     def _run(self, context):
         trace = Trace(self.Debug)
-        trace.step("Pumpkin rig setup %s, step=%s" % (BUILD_TAG, self.Step))
+        trace.step("Pumpkin rig setup %s, step=%s" % (RIG_TAG, self.Step))
         started = time.time()
         # Where the time went. The user's report - *"the second character did finish generating the rig properly,
         # but it seemed to take much longer"* - could not be answered from the trace at all: it carried one total
@@ -4113,7 +4127,7 @@ class RigifyChains(bpy.types.Operator):
 
         model, meshes = self._find_model_armature(context, trace)
         if model is None:
-            self.report({'ERROR'}, "[%s] No MMD armature found to rig (no armature is skinned to a mesh)." % BUILD_TAG)
+            self.report({'ERROR'}, "[%s] No MMD armature found to rig (no armature is skinned to a mesh)." % RIG_TAG)
             return {'CANCELLED'}
         self._model, self._meshes = model, [o for o in context.scene.objects
                                             if o.type == 'MESH' and o.name in meshes]
@@ -4139,7 +4153,7 @@ class RigifyChains(bpy.types.Operator):
             self.report({'ERROR'}, "[%s] %s is already rigged (its chain bones follow %s). Nothing was changed: a "
                                    "Full run here would produce a worse rig. Use Step = 'Wire only' to re-apply "
                                    "the wiring and the display, or Ctrl+Z / re-import the model. Trace: %s"
-                        % (BUILD_TAG, model.name, wired_rig.name, text_name))
+                        % (RIG_TAG, model.name, wired_rig.name, text_name))
             return {'CANCELLED'}
         if wired_bones:
             trace.info("%s is already rigged: %d chain bone(s) follow %s, so this run has nothing to generate or "
@@ -4235,7 +4249,7 @@ class RigifyChains(bpy.types.Operator):
             return self._finish_display_only(model, wired_rig, trace, started, mark,
                                              [name for name in wired_bones])
         if not chains:
-            self.report({'ERROR'}, "[%s] No chains matched the rules file - nothing to add." % BUILD_TAG)
+            self.report({'ERROR'}, "[%s] No chains matched the rules file - nothing to add." % RIG_TAG)
             return {'CANCELLED'}
         geometry = self._chain_geometry(model, chains, trace)
 
@@ -4258,7 +4272,7 @@ class RigifyChains(bpy.types.Operator):
             mmr = getattr(model, "uma_mmr", None)
             if mmr is None:
                 self.report({'ERROR'}, "The rig options that ship with this add-on are not on this object, so "
-                                       "there is no controller to add to. Nothing was changed. [%s]" % BUILD_TAG)
+                                       "there is no controller to add to. Nothing was changed. [%s]" % RIG_TAG)
                 return {'CANCELLED'}
             # MMR appends its metarig template only when no object of that name exists (`Controller.py:88`), and
             # rigify consumes the template when a run finishes (`:1034-1037`) - so a finished run leaves nothing
@@ -4274,7 +4288,7 @@ class RigifyChains(bpy.types.Operator):
                            "normally left behind by an MMR run that did not finish. MMR reuses an existing "
                            "template instead of appending a fresh one and the run then fails inside MMR, so this "
                            "operator stops here rather than failing halfway. Delete that object (or re-import "
-                           "the model) and run this again. Nothing was changed. [%s]" % BUILD_TAG)
+                           "the model) and run this again. Nothing was changed. [%s]" % RIG_TAG)
                 trace.check("no leftover MMR metarig template in the file", False,
                             "'MMR_Rig_relative' is already in this file")
                 trace.info(message)
@@ -4286,7 +4300,7 @@ class RigifyChains(bpy.types.Operator):
                 try:
                     bpy.ops.preferences.addon_enable(module="rigify")
                 except RuntimeError as error:
-                    self.report({'ERROR'}, "[%s] Could not enable rigify (%s)." % (BUILD_TAG, error))
+                    self.report({'ERROR'}, "[%s] Could not enable rigify (%s)." % (RIG_TAG, error))
                     return {'CANCELLED'}
 
             # state the wrapper needs; nothing is shared through globals
@@ -4349,7 +4363,7 @@ class RigifyChains(bpy.types.Operator):
                     trace.check("chains were inserted into the metarig", False, reason)
                     text_name = trace.save()
                     self.report({'ERROR'}, "[%s] The chains were not added to the metarig (%s), so nothing was "
-                                           "wired. See the %s text block." % (BUILD_TAG, reason, text_name))
+                                           "wired. See the %s text block." % (RIG_TAG, reason, text_name))
                     return {'CANCELLED'}
                 trace.check("chains were inserted into the metarig", True,
                             "%d chains, %d bones added" % (state.get("chains", 0),
@@ -4361,7 +4375,7 @@ class RigifyChains(bpy.types.Operator):
                 trace.info(traceback.format_exc())
                 trace.save()
                 self.report({'ERROR'}, "[%s] Rigify chains failed: %s (see the %s text block)"
-                            % (BUILD_TAG, error, TRACE_TEXT_NAME))
+                            % (RIG_TAG, error, TRACE_TEXT_NAME))
                 return {'CANCELLED'}
             finally:
                 # first, because it puts `bpy.ops` and rigify's own function back: everything below runs through
@@ -4430,7 +4444,7 @@ class RigifyChains(bpy.types.Operator):
             trace.check("generated rig found", False, "no armature with ORG-/DEF-/MCH- bones")
             trace.save()
             self.report({'ERROR'}, "[%s] No generated rig found to wire the chains to (see the %s text block)."
-                        % (BUILD_TAG, TRACE_TEXT_NAME))
+                        % (RIG_TAG, TRACE_TEXT_NAME))
             return {'CANCELLED'}
         trace.check("generated rig found", True, "%s (%d bones)" % (rig.name, len(rig.data.bones)))
         # ...and it goes inside the model's hierarchy, or moving the character by its root empty leaves it behind
@@ -4452,7 +4466,7 @@ class RigifyChains(bpy.types.Operator):
             trace.info(traceback.format_exc())
             text_name = trace.save()
             self.report({'ERROR'}, "[%s] Wiring the model to the chains failed: %s (see the %s text block)"
-                        % (BUILD_TAG, error, text_name))
+                        % (RIG_TAG, error, text_name))
             return {'CANCELLED'}
         mark("wire the model to the chains")
 
@@ -4615,7 +4629,7 @@ class RigifyChains(bpy.types.Operator):
         # file that was edited on disk only takes effect after the add-on is disabled/enabled or Blender
         # restarts. If a change "did nothing", this line says whether the change was even loaded.
         message = ("[%s] %d chains, %d model bones wired, collections: %s. Trace: %s"
-                   % (BUILD_TAG, len(chains), wired, ", ".join(present), text_name))
+                   % (RIG_TAG, len(chains), wired, ", ".join(present), text_name))
         if trace.failures:
             self.report({'WARNING'}, message + ". Checks failed: " + "; ".join(trace.failures[:4]))
         else:

@@ -393,13 +393,10 @@ class UmaScene(bpy.types.PropertyGroup):
     # Nothing in Looper's shader carries a *direction* except the Uma Sun empty: the sample it takes is a Diffuse BSDF
     # with weight 0, an optional socket that cannot simply be turned up, so it carries how much light there is rather
     # than where it comes from (measured: docs/WORLD_LIGHT_INFLUENCE.md). Aiming the empty at the scene's key light is
-    # what makes the shader's direction agree with the scene's, so nobody has to align it by hand. It touches no
-    # shader datablock, which is why it survived the revert of our patch to the shader itself.
-    sun_follow_key_light: BoolProperty(
-        name="Aim the Uma Sun at the key light",
-        default=False,
-        description="Turn the Uma Sun empty onto the scene's brightest lamp when Shading runs, so the shading "
-                    "direction follows the scene. Off by default, because it moves the empty the file came with")
+    # what makes the shader's direction agree with the scene's, and it touches no shader datablock, which is why it
+    # survived the revert of our patch to the shader itself. It is a **button** now, not a scene setting: the "aim it
+    # on every Shading run" checkbox was removed in 2.31.0 (the user: *"it's not used by anyone"*), and the button in
+    # the shading panel still does it on demand.
 
     face_normals: BoolProperty(
         name="Face normal transfer",
@@ -407,6 +404,12 @@ class UmaScene(bpy.types.PropertyGroup):
         description="Keep a hidden static copy of the face and transfer its custom normals onto the live face, so a "
                     "facial morph stops dragging the shading with it. Separates the face into its own object first, "
                     "and drops the morphs that cannot move each piece")
+
+    pregnancy_toggle: BoolProperty(
+        name="Pregnancy Toggle",
+        default=False,
+        description="Does nothing at all. A community joke, added because it was asked for - it is not wired to the "
+                    "rig, the shading or anything else, and nothing reads it")
 
     # Which shading groups the panel has folded away, as a bitmask over the groups in the settings table, one for
     # the global settings and one for the selected character's overrides. Here rather than on the objects
