@@ -60,6 +60,14 @@ try:
 except ImportError:  # pragma: no cover - only when that file is deleted
     Progress = None
 
+# Rigify's per-bone copying, batched (`RigifyCopyBatch.py`): rigify switches object mode twice per copied bone, which
+# is 408 mode switches and seconds of every run. Imported defensively like `Progress` - a run must still work if the
+# file is missing, and the batcher itself refuses rather than patches when rigify is not what it was written for.
+try:
+    from .RigifyCopyBatch import Batcher
+except ImportError:  # pragma: no cover - only when that file is deleted
+    Batcher = None
+
 # rigify's own prefixes, used to recognise the armature it generated
 GENERATED_PREFIXES = ("ORG-", "DEF-", "MCH-")
 # Rigify types that are **not** chains: the rule is applied to every bone it governs rather than to one chain
@@ -96,9 +104,24 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-61"
+BUILD_TAG = "chains-62"
 BUILD = BUILD_TAG + (
-    ": 2.28.0 - both long operations now say what they are doing and how long each part of it took. `Shading` and "
+    ": 2.29.0 - a rig run is up to 1.8x faster, with an identical rig, because rigify's per-bone mode switching is "
+    "batched. Rigify copies a bone by creating it in edit mode, switching to object mode to copy its pose properties, "
+    "and switching back - twice per bone, 204 bones, 408 dependency-graph flushes per run (`rigify/utils/bones.py`, "
+    "*\"LEGACY ONLY, DON'T USE\"*, and `utils/__init__.py` binds the plain name every rig type imports to exactly that "
+    "function). A flush costs what the file costs: measured, 7.9 ms in a file with no rig and 50-58 ms in one that "
+    "already contains a finished rig, which is why a second character cost 3x (`PERFORMANCE.md` 3.1-3.3). "
+    "`operators/RigifyCopyBatch.py` keeps the edit session open and copies the properties once per session instead - "
+    "measured 408 switches -> 6, first character 21.00s -> **14.21s** (1.48x), second character in the same file "
+    "63.89s -> **36.34s** (1.76x), and the two rigs identical by fingerprint (every bone, pose property and "
+    "constraint, hashed - also identical for the two-character file at 4 armatures / 3494 bones / 2548 constraints). "
+    "It watches for the end of an edit session through a proxy over `bpy.ops.object.mode_set`, because that is the "
+    "only signal available - `sys.setprofile` cannot see operator calls at all (measured) - and if that proxy cannot "
+    "be installed it patches nothing and says so rather than batching without a boundary. The switch is "
+    "`Batch rigify's bone copies` in More settings, on by default, and the trace's `timings:` line carries the count "
+    "of copies batched and switches avoided. Before that: 2.28.0 - both long operations now say what they are doing "
+    "and how long each part of it took. `Shading` and "
     "`Pumpkin Rig Setup` declare their steps, time them, print a `timings:` line and drive the status bar and the "
     "window manager's progress bar while they run (`operators/Progress.py`), because the sign of life until now was "
     "that the window stopped answering. Measuring first is what made the rest possible: the rig run is 99% one call "
@@ -2135,6 +2158,13 @@ class RigifyChains(bpy.types.Operator):
         description="Print every step and every check to the console as it runs",
         default=True,
     )
+    Batch_Rigify_Copies: BoolProperty(
+        name="Batch rigify's bone copies",
+        description="Rigify switches object mode twice for every bone it copies, which is most of a rig run. This "
+                    "does the same copying with one mode switch per edit session instead - measured at 1.5x on a "
+                    "first character and 1.8x on a second, with an identical rig",
+        default=True,
+    )
     More_Options: BoolProperty(
         name="More settings",
         description="Show the settings that decide what the rig is rather than what it contains: the step, the "
@@ -3854,6 +3884,7 @@ class RigifyChains(bpy.types.Operator):
             more.prop(self, "Step")
             more.prop(self, "Resample")
             more.prop(self, "Overwrite_Typed")
+            more.prop(self, "Batch_Rigify_Copies")
             more.prop(self, "Debug")
             more.separator()
             more.prop(self, "Rules_File")
@@ -4232,6 +4263,22 @@ class RigifyChains(bpy.types.Operator):
             visibility = None
             rigify_module = original = wrapper = None
             state = {"done": False}
+            # Rigify's own bone copying switches object mode twice per bone - 408 switches in this run, at 7.9 ms
+            # each in a file with no rig and 50-58 ms in one that has a rig, which is seconds of the wait. The
+            # batcher keeps the edit session open and copies the properties once per session instead; it is
+            # installed for exactly the window below and always taken back out, and it reports rather than raises
+            # if this rigify is not the one it was written against (`operators/RigifyCopyBatch.py`).
+            batcher = Batcher() if Batcher is not None else None
+            batch_mark = None
+            if batcher is None:
+                trace.info("rigify's bone copying was left alone: RigifyCopyBatch.py is missing")
+            elif self.Batch_Rigify_Copies:
+                if batcher.install():
+                    batch_mark = batcher.mark()
+                else:
+                    # One line, at the point of refusal, naming why - and then rigify's own copying runs, which is
+                    # slower but never different. The run's own line goes to the trace below, with the counts.
+                    trace.info("rigify's bone copying was left alone: %s" % batcher.reason)
             try:
                 # MMR appends its metarig template, so the object it will hand to rigify can be named
                 # ahead of time; the wrapper only proceeds when it sees that object
@@ -4253,6 +4300,12 @@ class RigifyChains(bpy.types.Operator):
                 # of it was this operator's own work on the metarig
                 MMR_SECONDS["mmr"] = time.time() - _mmr_started
                 MMR_SECONDS["insert"] = state.get("insert_seconds")
+                # No `MMR_SECONDS["copy_batch"]`: `MMR_SECONDS` is a local of this function (it is created just
+                # above the step plan and read by the timings lines below), so nothing outside `_run` could ever
+                # read a key put in it - measured, and it cost a probe two runs to notice. The trace line is the
+                # record, and it is the channel a report already reads.
+                if batcher is not None:
+                    trace.info(batcher.describe(batch_mark))
                 trace.check("uma.mmr_rig returned FINISHED", result == {'FINISHED'}, str(result))
                 # rigify's Generate operator catches exceptions from generate_rig and still reports
                 # FINISHED, so the insertion's own record decides whether wiring may run at all
@@ -4276,6 +4329,11 @@ class RigifyChains(bpy.types.Operator):
                             % (BUILD_TAG, error, TRACE_TEXT_NAME))
                 return {'CANCELLED'}
             finally:
+                # first, because it puts `bpy.ops` and rigify's own function back: everything below runs through
+                # both, including the visibility restore and any operator the caller uses after this block.
+                # `uninstall()` is unconditional and a no-op when nothing was installed.
+                if batcher is not None:
+                    batcher.uninstall()
                 if rigify_module is not None and original is not None:
                     rigify_module.generate_rig = original
                 for key, value in saved.items():
