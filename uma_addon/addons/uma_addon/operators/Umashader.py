@@ -43,6 +43,21 @@ try:
 except ImportError:  # pragma: no cover - only when that file is deleted
     WorldLight = None
 
+try:
+    from . import Progress
+except ImportError:  # pragma: no cover - only when that file is deleted
+    Progress = None
+
+
+def _steps(title):
+    """A `Progress.Steps` for a run, or None when the module is not there.
+
+    A one-line shim so every call below can be `if steps: steps.mark(...)` rather than a `hasattr` dance: the step
+    timings are a *report*, and nothing in a shading run may depend on them. The run is registered with
+    `Progress.begin`, and `execute`'s `finally` closes any bar an early return left open.
+    """
+    return Progress.begin(title) if Progress is not None else None
+
 #: The tag the world-light patch prints under, so a report says which part of a run it came from.
 WORLD_LIGHT_TAG = "world-light-1"
 
@@ -540,6 +555,11 @@ class ApplyShader(bpy.types.Operator):
             return self._apply(context)
         finally:
             leave_mode_as_found(context, mode)
+            # The run's steps are closed here rather than at the end of `_apply`, because `_apply` has five early
+            # `CANCELLED` returns (a missing manifest, a missing library, a part with no image to derive from) and a
+            # progress bar left open covers the status bar for the rest of the session.
+            if Progress is not None:
+                Progress.finish_running()
 
     def _apply(self, context: bpy.types.Context):
         obj = context.active_object
@@ -569,8 +589,29 @@ class ApplyShader(bpy.types.Operator):
             self.report({'ERROR'}, f"{blend_file} not found")
             return {'CANCELLED'}
 
+        # A shading run's own accounting: the four things it does, in the order it does them, each timed, and the
+        # status bar saying which one is running (the user's ask - *"separate them into logical steps and log time...
+        # so the user knows that it's working, and not just frozen"*). The weights are relative costs measured in
+        # `docs/PERFORMANCE.md`: binding textures and hooking the drivers are the two that cost anything, and the
+        # driver hook-up is by far the largest - one driver per setting per copy.
+        steps = _steps("Shading")
+        if steps:
+            # The order the run actually does them in, with relative costs from `docs/PERFORMANCE.md`: the driver
+            # hook-up is the largest by a long way (one driver per setting per copy - 287 on a seven-copy model),
+            # and the texture binding is the second (an image load per rule per material).
+            steps.plan(("read the shader's library", 2.0),
+                       ("copy materials and bind textures", 4.0),
+                       ("the outline shell", 1.0),
+                       ("hook up the drivers", 8.0),
+                       ("aim the sun", 0.5),
+                       ("the face-normal transfer", 3.0))
+
         # 追加 Icosphere of Materials Collection
-        library, masters, problems_here = ensure_library(manifest, blend_file, context)
+        if steps:
+            with steps.phase("read the shader's library"):
+                library, masters, problems_here = ensure_library(manifest, blend_file, context)
+        else:
+            library, masters, problems_here = ensure_library(manifest, blend_file, context)
         for problem in problems_here:
             print(f"[uma_addon] {problem}")
         if library is None:
@@ -580,15 +621,23 @@ class ApplyShader(bpy.types.Operator):
         # 遍历选中模型的材质槽
         source_nodes = manifest.get("source_image_nodes") or []
         recipes = manifest.get("textures") or {}
-        for slot in obj.material_slots:
+        # Only the slots this run will actually touch are counted, so the status line's "3 of 7" is true rather than
+        # a number that includes slots the manifest skips.
+        touched = [slot for slot in obj.material_slots
+                   if slot.material is not None and part_rule(manifest, slot.material.name) is not None]
+        if steps:
+            steps.status("copy materials and bind textures (0 of %d)" % len(touched))
+        for index, slot in enumerate(touched, start=1):
             old_mat = slot.material
-            if not old_mat: 
+            if not old_mat:
                 continue
             # 判断部位类型
             rule = part_rule(manifest, old_mat.name)
             if rule is None:
                 continue
             part_type = rule["id"]
+            if steps:
+                steps.note("copy materials and bind textures (%d of %d): %s" % (index, len(touched), old_mat.name))
             
             # 推导 Texture2D 贴图名
             if old_mat.node_tree:
@@ -635,6 +684,8 @@ class ApplyShader(bpy.types.Operator):
                 for spec in manifest.get("part_inputs") or []:
                     if spec.get("part") == part_type:
                         set_group_input(nodes, spec)
+        if steps:
+            steps.mark("copy materials and bind textures")
 
         # 为选中模型加上 shader 手册里说的那个 outline 几何节点
         #
@@ -685,6 +736,8 @@ class ApplyShader(bpy.types.Operator):
                     set_modifier_input(geom_mod, depth["name"], depth["identifier"], depth["value"])
                 if fix_outlines:
                     contain_outline(self, geom_mod, obj, blend_file, manifest, outline_masters)
+        if steps:
+            steps.mark("the outline shell")
 
         # The central shading control: one property per setting on the sun empty, one override per character on
         # its root empty, and a driver per setting per copy resolving override -> global. Hooked up here so a
@@ -707,6 +760,8 @@ class ApplyShader(bpy.types.Operator):
                          verification.get("checked", 0)))
             for note in report.get("notes", []):
                 print("[uma_addon] %s: %s" % (SHADER_CONTROL_TAG, note))
+        if steps:
+            steps.mark("hook up the drivers")
 
         # The world-light option is left exactly as upstream ships it. 2.23.0 patched it - the sample through a soft
         # band instead of a hard threshold, and the sun taken out of the world branch - and 2.23.1 took that back out:
@@ -733,6 +788,8 @@ class ApplyShader(bpy.types.Operator):
             except Exception as error:  # noqa: BLE001 - never take the shading run down
                 print("[uma_addon] %s: could not aim the sun empty (%s: %s)"
                       % (WORLD_LIGHT_TAG, type(error).__name__, error))
+        if steps:
+            steps.mark("aim the sun")
 
 
         # The face normals step (see operators/FaceNormals.py): a hidden static copy of the face plus a data
@@ -758,5 +815,9 @@ class ApplyShader(bpy.types.Operator):
             except Exception as error:  # noqa: BLE001 - never take the shading run down
                 print("[uma_addon] face normal transfer failed (%s: %s); the shading is applied without "
                       "it" % (type(error).__name__, error))
+        if steps:
+            # The bar is closed by `execute`'s `finally` (`Progress.finish_running`), so this last step is only the
+            # timing - the `timings:` line is printed when the run is closed, on every path out.
+            steps.mark("the face-normal transfer")
         self.report({'INFO'}, "Uma shader applied")
         return {'FINISHED'}

@@ -53,6 +53,13 @@ from .RigStyles import (STYLE_NONE, apply_style, capture_style, describe_style, 
                         find_generated_rig, read_style, save_style, style_dir, style_filename, style_files,
                         style_items)
 
+# The named steps, per-step timings and the status/progress bar (`Progress.py`). Imported the same defensive way the
+# shading half imports its optional modules: a rig run must still work with that file deleted.
+try:
+    from . import Progress
+except ImportError:  # pragma: no cover - only when that file is deleted
+    Progress = None
+
 # rigify's own prefixes, used to recognise the armature it generated
 GENERATED_PREFIXES = ("ORG-", "DEF-", "MCH-")
 # Rigify types that are **not** chains: the rule is applied to every bone it governs rather than to one chain
@@ -89,20 +96,28 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # master switch and resets, the presets fix and the action panel, none of which touch this module, and the tag was
 # left at chains-44 until the shipping pack showed it. The tag is what a tester checks a trace against, so it names
 # the whole build, not this file.
-BUILD_TAG = "chains-60"
+BUILD_TAG = "chains-61"
 BUILD = BUILD_TAG + (
-    ": 2.27.0 - the Pumpkin Rig dialog opens on Simple and on the rules table, every time. Blender hands an "
-    "operator its last-used property values and this operator's properties *are* the dialog, so a second model "
-    "used to open on the first model's mode, with its per-family answers already in the rows - the user's *\"some "
-    "settings are retained from the first run, e.g. tentacle type used for the hair and the extras\"*. A group "
-    "whose families disagree now reads `Mixed` instead of its most common answer, and a click on that row writes "
-    "the chosen type through to every family in it (measured: every group set to `basic.super_copy` leaves no "
-    "non-fixed family in those groups on anything else) - which is what let the dialog stop forcing itself into "
-    "Advanced, since that switch was the only thing standing between the old display and a silent flattening. The "
-    "X-ray row and the preset search box are off the dialog (both properties stay, so a scene, a preset or a "
-    "script still sets them), the dropdowns have one-word headers, and every tooltip here is two sentences or "
-    "fewer. Before that: 2.18.0 - the chains follow the body the way the model has them, instead of being cut "
-    "loose and pulled in "
+    ": 2.28.0 - both long operations now say what they are doing and how long each part of it took. `Shading` and "
+    "`Pumpkin Rig Setup` declare their steps, time them, print a `timings:` line and drive the status bar and the "
+    "window manager's progress bar while they run (`operators/Progress.py`), because the sign of life until now was "
+    "that the window stopped answering. Measuring first is what made the rest possible: the rig run is 99% one call "
+    "into MMR (`generate the rig` 21.2s of 21.5s here, and 64.3s of 64.6s for a second character - 3.0x), while a "
+    "shading run was 82% *one Python loop* - the shape-key analysis that decides which morphs a separated face "
+    "cannot use, 3.84s of 4.67s. That loop read `ShapeKeyPoint.co` a point at a time; it reads both arrays in bulk "
+    "now and compares them with numpy, which is 11x faster on its own and takes a whole `Shading` run from 4.67s to "
+    "**1.25s**. Before that: 2.27.0 - the Pumpkin Rig dialog opens on Simple and on the rules table, every time. "
+    "Blender hands an operator its last-used property values and this operator's properties *are* the dialog, so a "
+    "second model used to open on the first model's mode, with its per-family answers already in the rows - the "
+    "user's *\"some settings are retained from the first run, e.g. tentacle type used for the hair and the "
+    "extras\"*. A group whose families disagree now reads `Mixed` instead of its most common answer, and a click on "
+    "that row writes the chosen type through to every family in it (measured: every group set to "
+    "`basic.super_copy` leaves no non-fixed family in those groups on anything else) - which is what let the dialog "
+    "stop forcing itself into Advanced, since that switch was the only thing standing between the old display and a "
+    "silent flattening. The X-ray row and the preset search box are off the dialog (both properties stay, so a "
+    "scene, a preset or a script still sets them), the dropdowns have one-word headers, and every tooltip here is "
+    "two sentences or fewer. Before that: 2.18.0 - the chains follow the body the way the model has them, instead "
+    "of being cut loose and pulled in "
     "world space. Every chain bone keeps its MMD parent and copies its own control's **local** rotation "
     "(`options.chain_link: local`, the new default; `world` restores the previous wiring), so the character can "
     "be moved by its root empty without the mesh tearing: measured 0.588386 m and 182 bones -> 0.000001 m and 0 "
@@ -3980,6 +3995,20 @@ class RigifyChains(bpy.types.Operator):
     # --------------------------------------------------------------------------------------------------
 
     def execute(self, context):
+        """Run the setup, and close the progress bar however it ends.
+
+        The body is `_run` and this wrapper exists for one reason: `_run` has twenty-odd `return {'CANCELLED'}`
+        paths (no model, a stale build, a refused full run on an already-rigged model), and a bar left open covers
+        the status bar for the rest of the session. `Progress.finish_running` also prints the `timings:` line, so
+        the numbers are reported on every path out - including the ones that report a refusal.
+        """
+        try:
+            return self._run(context)
+        finally:
+            if Progress is not None:
+                Progress.finish_running()
+
+    def _run(self, context):
         trace = Trace(self.Debug)
         trace.step("Pumpkin rig setup %s, step=%s" % (BUILD_TAG, self.Step))
         started = time.time()
@@ -3989,11 +4018,27 @@ class RigifyChains(bpy.types.Operator):
         # this operator scales with the scene" were both consistent with it. These marks cost nothing and make the
         # next slow run explain itself. `MMR_SECONDS` is filled in by the wrapper, which is where rigify's own
         # generation happens, and `INSERT_SECONDS` separates our metarig work from MMR's.
-        marks = []
+        #
+        # Since 2.28.0 the same marks also drive the status bar and the progress bar (`Progress.Steps`), because the
+        # user asked for a run that does not look frozen: *"separate them into logical steps and log time? We could
+        # output it as a progress bar ... so the user knows that it's working"*. The weights are relative costs from
+        # `docs/PERFORMANCE.md` - MMR's generation is by far the largest, and it is a *single* call, so the bar jumps
+        # when it returns rather than creeping; the status line names the step instead.
+        steps = Progress.begin("Pumpkin Rig", trace=trace, debug=self.Debug) if Progress else None
         MMR_SECONDS = {}
+        if steps:
+            steps.plan(("the stale check", 0.2),
+                       ("find the model, rules, families and chains", 1.0),
+                       ("generate the rig (MMR + rigify)", 20.0),
+                       ("wire the model to the chains", 3.0),
+                       ("collections, UI rows and the style", 1.0))
+        marks = []
 
         def mark(label):
-            marks.append((label, time.time() - started))
+            if steps:
+                steps.mark(label)
+            else:
+                marks.append((label, time.time() - started))
         
         # Answer this before anything is measured: a stale module means every number below describes code that is
         # no longer on disk, which is the one thing that makes an entire run worthless (handoff 9ad).
@@ -4437,15 +4482,22 @@ class RigifyChains(bpy.types.Operator):
         other_armatures = [obj.name for obj in bpy.context.scene.objects
                            if obj.type == 'ARMATURE' and obj is not model and obj is not rig]
         scene_meshes = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
-        phases = []
-        previous = 0.0
-        for label, when in marks:
-            phases.append("%s %.1fs" % (label, when - previous))
-            previous = when
-        phases.append("everything else %.1fs" % max(0.0, (time.time() - started) - previous))
+        if steps:
+            # The steps carry their own durations, so the line is built where they are (`steps.timings()`), which is
+            # the format this trace has used since chains-40. The old `marks` arithmetic is kept for the case where
+            # `Progress.py` is missing, since that is the only other way this line is built.
+            timing_line = steps.timings()
+        else:
+            phases = []
+            previous = 0.0
+            for label, when in marks:
+                phases.append("%s %.1fs" % (label, when - previous))
+                previous = when
+            phases.append("everything else %.1fs" % max(0.0, (time.time() - started) - previous))
+            timing_line = "timings: %s | total %.1fs" % (" | ".join(phases), time.time() - started)
         mmr_seconds = MMR_SECONDS.get("mmr")
         insert_seconds = MMR_SECONDS.get("insert")
-        trace.info("timings: %s | total %.1fs" % (" | ".join(phases), time.time() - started))
+        trace.info(timing_line)
         trace.info("timings: the MMR call itself %.1fs%s"
                    % (mmr_seconds if mmr_seconds is not None else -1.0,
                       ", of which this operator's metarig work %.1fs" % insert_seconds

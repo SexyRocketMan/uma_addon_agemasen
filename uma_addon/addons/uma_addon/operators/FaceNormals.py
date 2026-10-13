@@ -47,6 +47,22 @@ viewer"* is a split mesh listing every morph twice.
 
 import bpy
 
+# `numpy` for the bulk shape-key comparison (Blender ships it; the `array` fallback is for a stripped build). It is
+# the difference between a 3.8 s `Shading` run and a fraction of a second - see `shape_key_effect`.
+try:
+    import numpy
+except ImportError:  # pragma: no cover - every Blender build ships numpy
+    numpy = None
+from array import array
+
+# The step timings come from the running `Shading` operation, when there is one (`Progress.current()`): this step is
+# 94-96% of that run's time, so its own breakdown is the interesting one. Imported defensively - a face-normal run
+# must work with that file deleted.
+try:
+    from . import Progress
+except ImportError:  # pragma: no cover - only when that file is deleted
+    Progress = None
+
 from bpy.types import Operator
 
 #: The tag reported by the operators and printed when the step runs, so a report can be told from a stale build.
@@ -274,13 +290,33 @@ def shape_key_effect(obj, key, basis):
     `ShapeKeyPoint.co` is the vertex's **absolute** position for that key, not an offset, so the offset is against
     the `Basis` key. Reading `co` as the offset makes every key look like it moves every vertex, which is how the
     first version of the analysis behind this function convinced itself that no key could ever be pruned.
+
+    **Why it is written in bulk, measured.** Reading `co` one point at a time in Python is 164 keys x ~8 000 points
+    x 3 components of attribute lookups on the reference model, and it cost **3.84 s** - 82% of an entire `Shading`
+    run, and the largest single cost anywhere in this add-on (`docs/PERFORMANCE.md`, `step_timing_check.py`). Both
+    coordinate arrays are now read in one C call each (`foreach_get`) and compared with numpy, which Blender ships;
+    the arithmetic is the same, and `step_timing_check.py` checks the two agree key by key on a real model rather
+    than trusting that.
     """
+    points = len(key.data)
+    if points == 0 or len(basis.data) != points:
+        return 0, 0.0
+    if numpy is not None:
+        current = numpy.empty(points * 3, dtype=numpy.float32)
+        rest = numpy.empty(points * 3, dtype=numpy.float32)
+    else:  # pragma: no cover - Blender ships numpy; the fallback is for a stripped build
+        current = array("f", [0.0]) * (points * 3)
+        rest = array("f", [0.0]) * (points * 3)
+    key.data.foreach_get("co", current)
+    basis.data.foreach_get("co", rest)
+    if numpy is not None:
+        delta = numpy.abs(current - rest).reshape(-1, 3).sum(axis=1)
+        moved = int(numpy.count_nonzero(delta > 1e-9))
+        return moved, (float(delta.max()) if moved else 0.0)
     moved, biggest = 0, 0.0
-    key_points = key.data
-    base_points = basis.data
-    for index, point in enumerate(key_points):
-        base = base_points[index].co
-        offset = abs(point.co.x - base.x) + abs(point.co.y - base.y) + abs(point.co.z - base.z)
+    for index in range(0, len(current), 3):
+        offset = abs(current[index] - rest[index]) + abs(current[index + 1] - rest[index + 1]) \
+            + abs(current[index + 2] - rest[index + 2])
         if offset > 1e-9:
             moved += 1
             biggest = max(biggest, offset)
@@ -337,12 +373,26 @@ def prune_split_morphs(body, piece, trace=None):
       anywhere stays on the body once, and no name disappears from the model.
 
     Measured on a 12,450-vertex model: the face drops 36 keys and the body 114, leaving 157 + 79 = 236 entries
-    where a naive split would list 386, with the same 193 names present as before.
+    where a naive split would list 386, with the same 193 names present as before. This step is **82% of a `Shading`
+    run** (3.8s of 4.6s on the reference model), so its two halves are timed apart: deciding which keys are dead
+    (a walk over every key's influence) and removing them (one call per key, each of which re-evaluates the mesh).
     """
-    dead_body = set(dead_shape_keys(body))
-    dead_face = set(dead_shape_keys(piece))
-    removed_face = remove_shape_keys(piece, dead_face, trace)
-    removed_body = remove_shape_keys(body, dead_body - dead_face, trace)
+    steps = Progress.current() if Progress is not None else None
+    if steps:
+        with steps.phase("the face step: work out which morphs are dead"):
+            dead_body = set(dead_shape_keys(body))
+            dead_face = set(dead_shape_keys(piece))
+    else:
+        dead_body = set(dead_shape_keys(body))
+        dead_face = set(dead_shape_keys(piece))
+    if steps:
+        with steps.phase("the face step: remove the dead morphs (%d + %d)"
+                         % (len(dead_face), len(dead_body - dead_face))):
+            removed_face = remove_shape_keys(piece, dead_face, trace)
+            removed_body = remove_shape_keys(body, dead_body - dead_face, trace)
+    else:
+        removed_face = remove_shape_keys(piece, dead_face, trace)
+        removed_body = remove_shape_keys(body, dead_body - dead_face, trace)
     return {"face_keys_removed": removed_face, "face_keys_left": len(piece.data.shape_keys.key_blocks)
             if piece.data.shape_keys else 0,
             "body_keys_removed": removed_body, "body_keys_left": len(body.data.shape_keys.key_blocks)
@@ -566,23 +616,50 @@ def split_off_face(context, face_obj, trace=None):
     Both halves used to be options (`face_normals_split`, `face_normals_prune_morphs`) and both are always on now
     (2.23.1): the separation is what makes the transfer cost the *face's* corners rather than the whole body's, and the
     pruning is what stops a viewer listing every morph twice, so neither was a choice worth offering.
+
+    The two are timed separately when a `Shading` run is going on, and the split is worth having: together they are
+    ~92% of that run's whole cost (4.0s of 4.4s), and `step_timing_check.py` reads which half. `bpy.ops.mesh.separate`
+    duplicates every shape key of the source mesh into the new object before either side is pruned, so the two are
+    expected to be of the same order - the measurement says which, and the answer is in `docs/PERFORMANCE.md`.
     """
-    piece = split_face_into_object(context, face_obj, trace)
+    steps = Progress.current() if Progress is not None else None
+    if steps:
+        with steps.phase("the face step: separate (the operator, with every morph)"):
+            piece = split_face_into_object(context, face_obj, trace)
+    else:
+        piece = split_face_into_object(context, face_obj, trace)
     if piece is None:
         return None, "the face could not be separated"
-    morphs = prune_split_morphs(face_obj, piece, trace)
+    if steps:
+        with steps.phase("the face step: prune the dead morphs"):
+            morphs = prune_split_morphs(face_obj, piece, trace)
+    else:
+        morphs = prune_split_morphs(face_obj, piece, trace)
     return piece, morphs
 
 
 def apply_face_normals(context, objects=None, trace=None):
-    """Run the whole step, idempotently. Returns a report dict."""
+    """Run the whole step, idempotently. Returns a report dict.
+
+    Timed from the inside when a shading run is going on (`Progress.current()`), because this step is **94-96% of a
+    `Shading` run's time** - 4.2s of 4.4s on the reference model, measured by `step_timing_check.py` - and "the face
+    step is slow" is only actionable once it says *which* part: the separation (an operator call on the whole face),
+    the static copy (a full mesh copy plus every shape key), or the transfer modifier. A standalone call - the panel's
+    own `Apply face normals` button - gets None and simply records nothing.
+    """
     report = {"tag": TAG, "targets": [], "notes": []}
+    steps = Progress.current() if Progress is not None else None
+
+    def phase(label):
+        return steps.phase(label) if steps else _null_phase()
+
     for face_obj, why in faces_in(context, objects):
         entry = {"object": face_obj.name, "why": why}
         if not is_whole_face(face_obj):
             # Spork's shape: the face becomes its own object, so the transfer only ever touches the face's corners.
             # Measured (+12.5 ms against +1.4 ms per evaluation) - see `split_face_into_object`.
-            piece, note = split_off_face(context, face_obj, trace)
+            with phase("the face step: separate the face and prune its morphs"):
+                piece, note = split_off_face(context, face_obj, trace)
             entry["split"] = note if piece is None else {
                 "into": piece.name, "polygons": len(piece.data.polygons),
                 "vertices": len(piece.data.vertices),
@@ -614,23 +691,25 @@ def apply_face_normals(context, objects=None, trace=None):
             report["targets"].append(entry)
             continue
         entry["limited_to_group"] = None if group is None else group.name
-        copy = find_copy(face_obj)
-        if copy is None:
-            copy = make_copy(context, face_obj, armature, head, trace)
-            entry["copy"] = "created"
-        else:
-            # reuse it, but not blindly: if the face's topology has changed since the copy was made (a separated
-            # slot, a join, deleted faces), the copy's mesh is refreshed from the face so the transfer maps again
-            mismatch = copy_topology_mismatch(copy, face_obj)
-            if mismatch:
-                refresh_copy_data(copy, face_obj)
-                entry["copy"] = "reused, mesh refreshed (%s)" % mismatch
-                report["notes"].append("%s: the copy's mesh was refreshed (%s)" % (face_obj.name, mismatch))
-                if trace is not None:
-                    trace.info("refreshed the static copy of %r: %s" % (face_obj.name, mismatch))
+        with phase("the face step: the static copy"):
+            copy = find_copy(face_obj)
+            if copy is None:
+                copy = make_copy(context, face_obj, armature, head, trace)
+                entry["copy"] = "created"
             else:
-                entry["copy"] = "reused"
-        modifier = make_modifier(face_obj, copy, group, context)
+                # reuse it, but not blindly: if the face's topology has changed since the copy was made (a separated
+                # slot, a join, deleted faces), the copy's mesh is refreshed from the face so the transfer maps again
+                mismatch = copy_topology_mismatch(copy, face_obj)
+                if mismatch:
+                    refresh_copy_data(copy, face_obj)
+                    entry["copy"] = "reused, mesh refreshed (%s)" % mismatch
+                    report["notes"].append("%s: the copy's mesh was refreshed (%s)" % (face_obj.name, mismatch))
+                    if trace is not None:
+                        trace.info("refreshed the static copy of %r: %s" % (face_obj.name, mismatch))
+                else:
+                    entry["copy"] = "reused"
+        with phase("the face step: the transfer modifier"):
+            modifier = make_modifier(face_obj, copy, group, context)
         entry["modifier"] = modifier.name
         entry["settings"] = {"object": copy.name, "use_loop_data": modifier.use_loop_data,
                              "data_types_loops": modifier.data_types_loops,
@@ -638,6 +717,16 @@ def apply_face_normals(context, objects=None, trace=None):
                              "vertex_group": modifier.vertex_group}
         report["targets"].append(entry)
     return report
+
+
+class _null_phase:
+    """`with phase(...)` when there is no run to record into - a no-op that still reads like the timed version."""
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, kind, value, tb):
+        return False
 
 
 # --- operators -----------------------------------------------------------------------------------------
