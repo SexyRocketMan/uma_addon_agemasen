@@ -108,11 +108,22 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # wiring, a different bone layout); it is deliberately separate from `BUILD_TAG` below, which identifies the *build*
 # for the trace, the fleet probe and the stale-code guard, and moves on every commit that touches this file. One
 # place, so a bump is one edit: this line, and whatever the message being changed happens to say.
-RIG_VERSION = "v2"
+RIG_VERSION = "v3"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-66"
+BUILD_TAG = "chains-67"
 BUILD = BUILD_TAG + (
+    ": 2.32.0 - the skirt gets one master control (rig version v3). The user asked for chou's skirt setup, and the "
+    "measurement made it much smaller than the design note assumed: a skirt panel is already a rigify tail chain whose "
+    "FK control drives a per-segment cascade that turns 30 degrees into a constant 30.0 degrees per joint (chou's own: "
+    "~29.2), so there was no cascade to add. What his rig has and ours did not is one bone over every panel, and that "
+    "is all this adds: `UMA_skirt_master`, linked to every skirt panel's own control (`COPY_ROTATION`, LOCAL -> "
+    "LOCAL_OWNER_ORIENT, BEFORE - the space chou's file uses for the same job), off by default behind *Skirt master "
+    "control* (or `options.skirt_master` in a rules file). Measured through the shipped switch "
+    "(`skirt_master_check.py`, 11 checks): 10 of 10 panels move, 26.63-30.0 degrees per joint, a panel still answers "
+    "its own control with the master turned (25 deg -> 0.222 m at 25.0 deg per joint), a `Wire only` re-run adds "
+    "neither a second bone nor a second link, and with the switch off nothing is added. Nothing is added to the "
+    "model's bones and no weight is touched. Before that: "
     ": 2.31.1 - the material copies stop climbing and start saying what they are. A model shaded three times used to "
     "end up with `.002`/`.003` on the same slot: each run copied the slot's material again and Blender handed the new "
     "copy the next free suffix while the old one still existed. A slot already wearing this shader's copy is reused "
@@ -2204,6 +2215,12 @@ class RigifyChains(bpy.types.Operator):
         description="Print every step and every check to the console as it runs",
         default=True,
     )
+    Skirt_Master: BoolProperty(
+        name="Skirt master control",
+        description="Add one control that swings every skirt panel at once. Each panel keeps its own control on top, "
+                    "so a single panel can still be corrected while the master is turned",
+        default=False,
+    )
     Batch_Rigify_Copies: BoolProperty(
         name="Batch rigify's bone copies",
         description="Rigify switches object mode twice for every bone it copies, which is most of a rig run. This "
@@ -3208,6 +3225,101 @@ class RigifyChains(bpy.types.Operator):
                           ", ".join(not_connected_notes[:3]) or "none"))
         return released, not_connected
 
+    #: The skirt master's own names, kept here because a re-run has to find what a previous run made.
+    SKIRT_MASTER_NAME = "UMA_skirt_master"
+    SKIRT_MASTER_CONSTRAINT = "UMA_skirt_master_link"
+
+    def _add_skirt_master(self, rig, chains, trace):
+        """One control over every skirt panel - chou's `skirt_master`, built on what rigify already generates.
+
+        The measurement that made this small (`skirt_master_probe.py`, `docs/SKIRT_RIG_STUDY.md` 8b): a skirt panel is
+        a rigify `spines.basic_tail` chain, and its FK control (`<panel>_00_master`) already drives a *per-segment
+        cascade* - each segment copies the one above it - which turns 30 degrees into a constant **30.0 degrees per
+        joint** and 0.261 m of hem on this model's three-segment panels. chou's own rig does exactly that (a constant
+        ~29.2 degrees per joint, 0.271 m over twelve), so the cascade does not have to be added at all. What his rig
+        has and ours did not is **one bone over every panel**: that, and nothing else, is what this builds.
+
+        One bone plus one `COPY_ROTATION` per panel control, in `LOCAL` -> `LOCAL_OWNER_ORIENT` with `BEFORE` - the
+        space chou's file uses for the same job, so one rotation is read in each panel's own orientation. Measured: 4
+        of 4 panels moved (24.9-29.1 degrees each, the same spread chou's ring shows), and a panel keeps its own
+        authority afterwards (its own control still turns it 25 degrees). Nothing is added to the model's bones and no
+        weight is touched, so this cannot change how the mesh deforms - only what moves the panels.
+        """
+        panels = []
+        for rule, chain in chains:
+            if str(rule.get("collection", "")).lower() != "skirt" or not chain:
+                continue
+            control = chain[0]
+            if control not in rig.pose.bones:
+                continue
+            # The bone a user turns is rigify's own per-panel master, not the chain root: that root is *driven* by
+            # `COPY_ROTATION` from `<root>_master`, so assigning a rotation to it measures nothing (handoff 9cb).
+            master = None
+            for constraint in rig.pose.bones[control].constraints:
+                if constraint.type == 'COPY_ROTATION' and getattr(constraint, "subtarget", ""):
+                    master = constraint.subtarget
+                    break
+            if master:
+                panels.append((control, master))
+        if len(panels) < 2:
+            trace.info("skirt master: skipped - %d skirt panel(s) with a control of their own to drive (2 needed)"
+                       % len(panels))
+            return {"panels": len(panels), "linked": 0}
+        active = bpy.context.view_layer.objects.active
+        try:
+            for obj in bpy.context.scene.objects:
+                obj.select_set(False)
+            rig.select_set(True)
+            bpy.context.view_layer.objects.active = rig
+            bpy.ops.object.mode_set(mode='EDIT')
+            edit = rig.data.edit_bones
+            master_bone = edit.get(self.SKIRT_MASTER_NAME)
+            created = master_bone is None
+            if created:
+                first = edit[panels[0][1]]
+                master_bone = edit.new(self.SKIRT_MASTER_NAME)
+                master_bone.head = first.head
+                master_bone.tail = first.head + Vector((0.0, 0.0, 0.10))
+                master_bone.use_deform = False
+            bpy.ops.object.mode_set(mode='OBJECT')
+            # Show it with the panels rather than in whatever collection happens to be active.
+            try:
+                collections = [collection for collection in rig.data.collections
+                               if rig.data.bones.get(panels[0][1]) in collection.bones]
+                if collections:
+                    collections[0].assign(rig.data.bones[self.SKIRT_MASTER_NAME])
+            except Exception:  # noqa: BLE001 - a bone in the wrong collection is cosmetic
+                pass
+            linked = 0
+            for _control, master in panels:
+                holder = rig.pose.bones.get(master)
+                if holder is None:
+                    continue
+                existing = holder.constraints.get(self.SKIRT_MASTER_CONSTRAINT)
+                if existing is not None:
+                    holder.constraints.remove(existing)
+                constraint = holder.constraints.new('COPY_ROTATION')
+                constraint.name = self.SKIRT_MASTER_CONSTRAINT
+                constraint.target = rig
+                constraint.subtarget = self.SKIRT_MASTER_NAME
+                constraint.owner_space = 'LOCAL'
+                constraint.target_space = 'LOCAL_OWNER_ORIENT'
+                constraint.mix_mode = 'BEFORE'
+                linked += 1
+            bpy.context.view_layer.update()
+        finally:
+            if active is not None and active.name in bpy.data.objects:
+                for obj in bpy.context.scene.objects:
+                    obj.select_set(False)
+                active.select_set(True)
+                bpy.context.view_layer.objects.active = active
+        trace.check("the skirt panels answer one master control", linked == len(panels),
+                    "%d of %d panel control(s) linked to %s%s"
+                    % (linked, len(panels), self.SKIRT_MASTER_NAME, "" if created else " (the bone was already there)"))
+        trace.info("skirt master: %s (%s) drives %d panel(s) - turn it to swing every skirt panel at once; each panel "
+                   "keeps its own control on top" % (self.SKIRT_MASTER_NAME, "created" if created else "reused", linked))
+        return {"panels": len(panels), "linked": linked, "created": created}
+
     def _wire_model_to_chains(self, model, rig, chains, trace, release_parents=True, resample="keep",
                               chain_deform="rigid", chain_link="world"):
         """Let the model's own chain bones follow the rig's copies of the same name.
@@ -3922,6 +4034,7 @@ class RigifyChains(bpy.types.Operator):
                 box.label(text="Advanced sets %s family by family" % ", ".join(mixed), icon='INFO')
         column.separator()
         column.prop(self, "Chain_Layers")
+        column.prop(self, "Skirt_Master")
         column.prop(self, "More_Options")
         if self.More_Options:
             more = column.box()
@@ -4476,6 +4589,16 @@ class RigifyChains(bpy.types.Operator):
                         % (RIG_TAG, error, text_name))
             return {'CANCELLED'}
         mark("wire the model to the chains")
+
+        # The skirt master (2.32.0, `docs/SKIRT_RIG_STUDY.md` 8b): one control over every skirt panel, built on the
+        # per-panel cascade rigify already generates. Off by default - it adds a bone - and it can also be asked for
+        # from a rules file (`options.skirt_master`), the way the other rig-shaping choices can.
+        if bool(self.Skirt_Master) or bool(options.get("skirt_master", False)):
+            try:
+                self._add_skirt_master(rig, chains, trace)
+            except Exception as error:  # noqa: BLE001 - a rig without the master is still a rig
+                trace.check("the skirt panels answer one master control", False, "%s" % error)
+                trace.info("skirt master: could not be added (%s: %s)" % (type(error).__name__, error))
 
         wanted = sorted({rule.get("collection") for rule, _ in chains if rule.get("collection")})
         # the metarig was generated before these collections existed on the rig, so the row numbers are
