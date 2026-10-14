@@ -30,6 +30,34 @@ ring with legs inside it is its classic failure case. Every input this needs is 
 Measured through the whole pipeline (reshape before the rig is generated): the metarig follows the reshaped *and
 newly created* bones to 0.0000 m, the model at rest is unchanged to 2.5e-07 m, and the cloth's local bend goes from
 falling to rising - 89.05 deg at the hem against 30.90 deg for the shipped single hinge.
+
+## 2.33.4 - the split was computed on the wrong bone length (a real bug, found by `skirt_reshape_scale_check.py`)
+
+Steps 1-3 above measure the cloth in fractions of the root bone (`s_min..s_max`) and lay the joints out on that
+same basis, but per panel this module called `_reshape_chain` **first** - which shortens the root to `joints[1]` -
+and only then re-read the bone's length, handing the *shortened* figure to `_redistribute`. There `s` is
+`(local - head).dot(axis) / length`, while the `centres` it is compared against stay in the original basis, so
+every vertex came out `f / joints[1]` too far down the panel. On Maruzensky's `_B` panel that factor is 1.60, and
+the split it produced was:
+
+| | `_00` (the hip joint the skirt hangs from) | `_01` | `_02` (turns twice as far) |
+|---|---|---|---|
+| before 2.33.4 | **0.2%** | 7.1% | **92.7%** |
+| after 2.33.4 | 7.8% | 36.3% | 55.9% |
+
+The handover between `_01` and `_02` sat at 0.541 of the original bone where the joint the cloth was measured for
+is at 0.839, and `_01` already outranked `_00` at the topmost cloth vertex, so the hip bone never led anywhere in
+the cloth at all. After the fix that handover is 0.840 against the 0.839 joint. The same mistake is why this
+module's per-panel trace line reported 0.093 m for a panel whose cloth is 0.144 m - short by exactly `joints[1]`.
+
+What it did *not* change is the hem: measured through the shipped switch at 30 deg on the master, the worst cloth
+vertex moves 0.18618 m **both ways**, and the hem's own tangent is 89.20 deg before against 89.23 after - the hem
+bone dominated the maximum either way, so the dose this feature is quoted for was never in doubt. What changed is
+where the curve is: the tangent profile was 48.81, 78.14, 89.20 (a third of the way to the hem's angle in one
+step, then nearly flat - the slab signature of weights piled on the hem bone) and is 53.59, 68.66, 89.23 after, a
+steady +15.07 and +20.57. So this was a **skinning** defect rather than a loss of curl: the panel's top, near the
+hips, was being driven by the hem bone. The symptom to look for is that section moving with the skirt bones, which
+is what the user reported on this model.
 """
 import math
 
@@ -262,18 +290,32 @@ def reshape_skirt_panels(model, trace, spacing=SPACING_M, forced=None):
             skipped[stem] = "already deforms through %d bone(s), which is what %.3f m of cloth asks for" % (
                 have, span * bone.length)
             continue
+        # The cloth was measured (`s_min`/`s_max`) as fractions of the root bone as it stands **now**, and
+        # `_joint_positions` lays the joints out on that same basis, so the weight split has to be computed on it
+        # too. `_reshape_chain` is about to shorten that bone to `joints[1]` of its length, so the basis is captured
+        # *first*: re-reading the bone afterwards (which is what this did until 2.33.4) divides every vertex by the
+        # shortened length while the centres it is compared against stay in the original basis, making `s` come out
+        # `f / joints[1]` too far down the panel. Measured on Maruzensky's `_B` with `skirt_reshape_scale_check.py`,
+        # whose joints were 0.000/0.627/0.839/1.051 and whose centres were 0.314/0.733/0.945: the split it produced
+        # put **0.2%** of the panel's weight on `_00` (the hip joint the skirt hangs from) and **92.7%** on `_02`
+        # (the bone that turns twice as far), with the `_01`->`_02` handover at 0.541 instead of at the joint the
+        # cloth was measured for (0.839) - so the panel swung from its middle rather than curling from the hip.
+        original = model.data.bones[root]
+        head = original.head_local.copy()
+        direction = original.tail_local - original.head_local
+        length = direction.length
+        axis = direction.normalized()
         names = _reshape_chain(model, stem, chain, entry["s_min"], entry["s_max"], want, trace)
         if not names:
             skipped[stem] = "its root bone %s is not in the model" % root
             continue
-        head = model.data.bones[root].head_local
-        direction = model.data.bones[root].tail_local - head
-        length = direction.length
-        writes = _redistribute(model, meshes, names, entry["s_min"], entry["s_max"], head,
-                               direction.normalized(), length, trace)
+        writes = _redistribute(model, meshes, names, entry["s_min"], entry["s_max"], head, axis, length, trace)
         reshaped.append({"stem": stem, "bones": names, "writes": writes,
                          "cloth_m": round(span * length, 5),
                          "deforming_before": have, "deforming_after": len(names)})
+        # `span * length` with `length` from *this* basis is the cloth this panel actually has: the two numbers
+        # agreed with the summary line above only after the basis was fixed (before it, this line reported 0.093 m
+        # for a 0.144 m cloth - short by exactly `joints[1]`).
         trace.info("skirt reshape: %s now has %d hinge(s) inside %.3f m of cloth (%s); %d weight write(s)"
                    % (stem, want, span * length, " -> ".join(names), writes))
     report = {"panels": len(geometry), "reshaped": reshaped, "skipped": skipped,
