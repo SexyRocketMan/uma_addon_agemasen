@@ -114,8 +114,31 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 RIG_VERSION = "v7"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-75"
+BUILD_TAG = "chains-76"
 BUILD = BUILD_TAG + (
+    ": 2.33.8 - the skirt reshape is on by default, and two things the fleet found in it are fixed (rig version "
+    "stays v7). It was off for one reason - it rewrites a model's own weights - and that reason is now a "
+    "measurement rather than an assumption: `fleet_chains.ps1 -Sample 40` on both labels at `chains-75` found "
+    "**262 panels across the 26 models that have the family, 262 measured, 235 reshaped, 27 left alone, and no "
+    "panel a measurement failed on**; every one of the 27 skips was \"already deforms through N bone(s), which is "
+    "what N m of cloth asks for\"; the **skirt cloth moves 0.00000 m at rest on all 40 models** and `Hip`'s weighted "
+    "vertex count changed on **0 of 40**. The two fixes: (1) the module's own check ended with `and bool(reshaped)`, "
+    "so a model whose panels were *all* legitimately left alone - `1062_50`, 12 panels, all already deep enough - "
+    "reported `every skirt panel deforms through at least 3 bone(s) after the reshape - 0 reshaped, 12 left alone` "
+    "as a **failed check**. Leaving every panel alone is the good outcome, so the condition is now `all(...)` over "
+    "the panels it did reshape, and the line says which of the two happened. *Do not quote that line with its own "
+    "failure marker in this header*: the first version of this note did, and because the header is part of every "
+    "trace, every tool that scans a trace for the marker - `fleet_chains_probe.py`, `skirt_master_check.py` - "
+    "reported one phantom failed check on every run of every model until it was reworded. The parsers now require "
+    "the marker to open a check line rather than appear anywhere, but the header is still not the place for one. "
+    "(2) \"no skirt panel had enough cloth to measure\" "
+    "was one message for two different nothings and read as a *measurement* failure: 12 of the 40 models name no "
+    "skirt bone at all and 2 name it `Sp_Hi_CSkirt0`, which this module does not look for. Those are now two "
+    "messages, one naming the prefix it looks for and one giving the panel count it found. The fleet also has the "
+    "numbers for a separate, pre-existing gap: a `Sp_Hi_CSkirt0` skirt is rigged as `basic.super_copy` - \"the "
+    "fallback for families no rule names\" - in the **Extras** collection rather than as a Skirt chain, because the "
+    "rules table's skirt rule and the group map both key on `Sp_Hi_MSkirt`/`Sp_Wa_MSkirt`/`Tp_Hi_MSkirt` alone. "
+    "Before that: "
     ": 2.33.7 - the tooltips say what a setting does and stop there. The user: *\"I would trim down the tooltips - "
     "they are a bit too verbose now. Maybe shorten them to a few sentences at most - give a technical user a dry "
     "overview, nothing else.\"* The dropdown *items* were already trimmed to one line each at 2.27.0 (see the note "
@@ -2377,11 +2400,17 @@ class RigifyChains(bpy.types.Operator):
         description="Add one control that swings every skirt panel at once. Each panel keeps its own control on top",
         default=True,
     )
+    # On by default from 2.33.8. It was off for exactly one reason - it rewrites a model's own weights - and that is
+    # now measured rather than assumed: the 40-model fleet (both labels, `chains-75`) found 262 panels, 262 of them
+    # measured, 235 reshaped, 27 left alone for being already deep enough, **no panel a measurement failed on**, a
+    # **0.00000 m** rest-pose delta on the skirt cloth of all 40 models, and the `Hip` blend count unchanged on all
+    # 40. Pass `Skirt_Reshape=False` to ask for the rig without it - `fleet_chains.ps1` has `-SkirtNoReshape` for the
+    # labels that are compared against a pre-2.33.8 fleet run.
     Skirt_Reshape: BoolProperty(
         name="Reshape short skirt chains",
         description="Give a panel more hinges when its cloth has length for them: subdivides the panel's bones and "
-                    "shares its existing weight across them. Edits the model's own weights, so it is off by default",
-        default=False,
+                    "shares its existing weight across them. Edits the model's own weights",
+        default=True,
     )
     Batch_Rigify_Copies: BoolProperty(
         name="Batch rigify's bone copies",

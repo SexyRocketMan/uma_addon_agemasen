@@ -306,8 +306,17 @@ def reshape_skirt_panels(model, trace, spacing=SPACING_M, forced=None):
         trace.info("skirt reshape: no mesh is skinned to %s, so there is no cloth to measure - nothing changed"
                    % model.name)
         return {"panels": 0, "reshaped": [], "skipped": {}, "writes": 0}
+    # Two different nothings, and until 2.33.8 they shared one message (2.33.8, found by the 40-model fleet: 12 of
+    # the 40 models in the pool name no skirt bone at all, and 2 name it `Sp_Hi_CSkirt0`, which this module does not
+    # look for). "No skirt panel had enough cloth to measure" told those 14 models apart from nothing and read as a
+    # *measurement* failure, which it never was: no panel had been measured because none had been found.
+    found = panels(model)
+    if not found:
+        trace.info("skirt reshape: this model names no skirt family the reshape recognises - it looks for %s* "
+                   "(the `_Handle` bones aside) - nothing changed" % SKIRT_PREFIX)
+        return {"panels": 0, "reshaped": [], "skipped": {}, "writes": 0}
     geometry = {}
-    for stem, chain in sorted(panels(model).items()):
+    for stem, chain in sorted(found.items()):
         root = chain[0]
         extent = cloth_of(model, meshes, root, chain)
         if extent is None:
@@ -315,7 +324,8 @@ def reshape_skirt_panels(model, trace, spacing=SPACING_M, forced=None):
         geometry[stem] = {"chain": chain, "root": root, "s_min": extent[0], "s_max": extent[1],
                           "vertices": extent[2]}
     if not geometry:
-        trace.info("skirt reshape: no skirt panel had enough cloth to measure - nothing changed")
+        trace.info("skirt reshape: %d skirt panel(s) found, but none had cloth this could measure - a panel needs "
+                   "%d weighted vertex/vertices - nothing changed" % (len(found), MIN_VERTICES))
         return {"panels": 0, "reshaped": [], "skipped": {}, "writes": 0}
 
     longest = max(entry["s_max"] - entry["s_min"] for entry in geometry.values())
@@ -379,7 +389,18 @@ def reshape_skirt_panels(model, trace, spacing=SPACING_M, forced=None):
               "bones": want, "writes": sum(entry["writes"] for entry in reshaped)}
     for stem, why in sorted(skipped.items()):
         trace.info("skirt reshape: %s left alone - %s" % (stem, why))
+    # **Not** `and bool(reshaped)`, which is what this said until 2.33.8. Leaving every panel alone is a legitimate
+    # and good outcome - it means their cloth already deforms through enough bones - and the old condition turned it
+    # into a failed check: on `1062_50` (found by the 40-model fleet) all 12 panels were left alone for exactly that
+    # reason and the run reported
+    #
+    #     [FAIL] every skirt panel deforms through at least 3 bone(s) after the reshape - 0 reshaped, 12 left alone
+    #
+    # so a user whose skirts were already right was told the run had failed. `all(...)` over an empty list is True,
+    # and every panel that *was* reshaped is still checked here; the line below says which of the two happened.
+    reshaped_note = ("%d reshaped, %d left alone" % (len(reshaped), len(skipped)) if reshaped
+                     else "%d panel(s) left alone - every one of them already deforms through enough bone(s), so "
+                          "there was nothing to do" % len(skipped))
     trace.check("every skirt panel deforms through at least %d bone(s) after the reshape" % MIN_BONES,
-                all(entry["deforming_after"] >= MIN_BONES for entry in reshaped) and bool(reshaped),
-                "%d reshaped, %d left alone" % (len(reshaped), len(skipped)))
+                all(entry["deforming_after"] >= MIN_BONES for entry in reshaped), reshaped_note)
     return report
