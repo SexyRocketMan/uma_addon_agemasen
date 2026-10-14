@@ -114,8 +114,28 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 RIG_VERSION = "v7"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-73"
+BUILD_TAG = "chains-74"
 BUILD = BUILD_TAG + (
+    ": 2.33.6 - the setup panel, slimmed, and the skirt master on by default (rig version stays v7 - the same rig "
+    "for a given set of answers, only the answers it opens with changed). The user: *\"the panel is a bit too "
+    "overwhelming for the user as it stands\"*. Four changes, and one consequence worth knowing. **`Mode` is now a "
+    "checkbox** (`Edit per family`): the two answers were never a mode the user is in, they are how much detail "
+    "they want, and `Mode` remains the source of truth that `fallback_mode`, `sync_preset`, `adopt_group_edits` and "
+    "the trace all read - the checkbox mirrors it and the click is adopted against a snapshot, exactly the shape "
+    "`adopt_group_edits` uses, because a plain mirror would overwrite the click on the next redraw. **The visual "
+    "styles are off the dialog** (`Style`, its folder and its save button commented out) - the property, the "
+    "operators, `RigStyles.py` and a style's effect on a rig all stay, so a scene, a preset or a script still sets "
+    "one and putting the rows back is uncommenting them; with them hidden every rig takes the shipped default "
+    "(`coolchou.json`). **Three rows left `Advanced settings`** (renamed from `More settings`, a name it could only "
+    "take once `Advanced` stopped meaning the per-family mode): `Batch rigify's bone copies` (pure speed, identical "
+    "rig), `Debug` (console verbosity, and it defaulted to on) and `Rules File` (a raw path to the rules JSON, "
+    "reachable through the folder button and the `Rigify Chain Rules` operator). **`Skirt master control` defaults "
+    "to on** - it was off only because it adds a bone, and that bone is the one-control skirt the feature exists "
+    "for - and `Skirt_Reshape` stays off until the 40-model fleet has measured how often its measurement fails on "
+    "real models, since it is the one thing here that rewrites a model's own weights. The consequence: `-SkirtMaster` "
+    "in `fleet_chains.ps1` and `Skirt_Master=True` in a probe are now no-ops, and anything that needs the rig "
+    "*without* the master - `mmr_freedom_check.py`, which pins the whole rig to a SHA, and any fleet label compared "
+    "against a pre-2.33.6 one - has to pass `Skirt_Master=False` explicitly. Before that: "
     ": 2.33.5 - the skirt reshape measures the **panel's** cloth, not only the share its root bone owns (rig version "
     "v7). The user, on `silence_suzuka_upgraded.pmx`: *\"the skirt bones generated after the reshape don't cover the "
     "whole span of the skirt [...] the bones cover barely half of the skirt, and the rest of it moves like a slab. I "
@@ -2078,6 +2098,20 @@ def sync_group_fields(operator):
     set_group_snapshot(operator, values)
 
 
+def edit_per_family(operator):
+    """Mirror `Mode` into the `Per_Family` checkbox, and adopt a click on it back into `Mode`.
+
+    Same shape as `adopt_group_edits`, and for the same reason: a redraw cannot tell the user's click from its own
+    mirror, so what the user moved is compared against the snapshot taken when it was last written. `Mode` is still
+    the one place the choice is stored - this only gives it a checkbox row instead of a two-button dropdown.
+    """
+    wanted = 'ADVANCED' if operator.Per_Family else 'SIMPLE'
+    if operator.Per_Family_Snapshot and wanted != operator.Per_Family_Snapshot:
+        operator.Mode = wanted
+    operator.Per_Family = (operator.Mode == 'ADVANCED')
+    operator.Per_Family_Snapshot = 'ADVANCED' if operator.Per_Family else 'SIMPLE'
+
+
 def adopt_group_edits(operator):
     """Simple mode: if a group row moved since the last redraw, give every family in it that answer.
 
@@ -2152,6 +2186,10 @@ def reset_dialog_state(operator):
     question about the model in front of you.
     """
     operator.Mode = 'SIMPLE'
+    # the checkbox mirrors `Mode`, so it is carried-over state too: a second model must open on the group rows even
+    # if the first was edited per family (the same report the rest of this function answers)
+    operator.Per_Family = False
+    operator.Per_Family_Snapshot = ""
     operator.Preset = PRESET_DEFAULT
     operator.Preset_Filter = ""
     operator.Preset_Key = ""
@@ -2203,6 +2241,18 @@ class RigifyChains(bpy.types.Operator):
         ],
         default='SIMPLE',
     )
+    # The per-family switch, drawn in place of the `Mode` dropdown (2.33.6). `Mode` stays the *source of truth*:
+    # `fallback_mode`, `sync_preset`, `adopt_group_edits`, `sync_group_fields`, `execute`'s `mode:` trace line and
+    # `rigify_dialog_state_check.py` all read it, and a scene, a preset or a script can still set it. This checkbox
+    # mirrors it, and the *edit* is detected against a snapshot - the same shape as `adopt_group_edits`, because a
+    # plain mirror would overwrite the user's click on the very next redraw.
+    Per_Family: BoolProperty(
+        name="Edit per family",
+        description="Answer every physics family on its own instead of one answer per group. Off shows the group "
+                    "rows - Hair, Skirt, Chest, Tail, Extras, Other - which is what most runs want",
+        default=False,
+    )
+    Per_Family_Snapshot: StringProperty(name="Last per-family switch", default="", options={'HIDDEN'})
     Preset: EnumProperty(
         name="Preset",
         description="Fills the rig type rows from a stored set of answers. Nothing picks one automatically - "
@@ -2312,11 +2362,16 @@ class RigifyChains(bpy.types.Operator):
         description="Print every step and every check to the console as it runs",
         default=True,
     )
+    # On by default from 2.33.6. It was off because it adds a bone, and the fleet therefore had to ask for it
+    # (`-SkirtMaster`); but the bone *is* the one-control skirt the feature exists for, every gate covers it
+    # (`skirt_master_check.py` 20/0 both on and off), and a user who never opens the settings panel should still
+    # get it. Pass `Skirt_Master=False` to ask for the rig without it - `fleet_chains.ps1`'s switch still does, for
+    # the labels that are compared against pre-2.33.6 fleet runs.
     Skirt_Master: BoolProperty(
         name="Skirt master control",
         description="Add one control that swings every skirt panel at once. Each panel keeps its own control on top, "
                     "so a single panel can still be corrected while the master is turned",
-        default=False,
+        default=True,
     )
     Skirt_Reshape: BoolProperty(
         name="Reshape short skirt chains",
@@ -2333,10 +2388,13 @@ class RigifyChains(bpy.types.Operator):
                     "first character and 1.8x on a second, with an identical rig",
         default=True,
     )
+    # Renamed from "More settings" at 2.33.6. The word "Advanced" used to be *taken* - it was the name of the
+    # per-family mode beside this toggle, and the panel deliberately avoided it for that reason. The mode is now the
+    # `Edit per family` checkbox, so the name is free for the panel it actually describes.
     More_Options: BoolProperty(
-        name="More settings",
-        description="Show the settings that decide what the rig is rather than what it contains: the step, the "
-                    "bone lengths, MMR's own types and the rules file",
+        name="Advanced settings",
+        description="The settings that decide what the rig is rather than what it contains: the step, the bone "
+                    "lengths and MMR's own types",
         default=False,
     )
     Resample: EnumProperty(
@@ -4204,7 +4262,7 @@ class RigifyChains(bpy.types.Operator):
             return None
 
     def more_settings_lines(self, context):
-        """What `More settings` says about `Step`: the detected value, and why.
+        """What `Advanced settings` says about `Step`: the detected value, and why.
 
         A method rather than inline code in `draw` so it can be exercised headlessly (`preset_ui_probe.py`) - the
         panel is the only place this runs, and the panel cannot be drawn without a window.
@@ -4226,14 +4284,18 @@ class RigifyChains(bpy.types.Operator):
         return lines + wrap_note("Step: %s - %s" % (step.capitalize(), why))
 
     def draw(self, context):
-        """Mode, preset, and then either one row per group or one row per family.
+        """Preset, then either one row per group or one row per family - behind one checkbox.
 
-        `Simple` shows the five group rows; `Advanced` shows every physics family the model has - median 13 of
-        them across his 241 rigs, 23 at most - grouped under the same headings, so it reads as the simple view
-        expanded rather than a second system. The two families his own rigs never vary are listed and locked, so
-        nobody has to wonder where the ears went. Everything that decides what a rig *is* rather than what it
-        contains (`Step`, `Resample`, `Overwrite_Typed`, the rules file) stays folded away under `More settings`,
-        which is deliberately *not* called "Advanced" - that word belongs to the per-family mode above it.
+        `Edit per family` (off) shows the group rows; on, it shows every physics family the model has - median 13
+        of them across chou's 241 rigs, 23 at most - grouped under the same headings, so it reads as the group view
+        expanded rather than a second system. It is a checkbox over `Mode` (see `edit_per_family`) because the two
+        answers are not a *mode* the user is in, they are how much detail they want right now. The two families
+        chou's own rigs never vary are listed and locked, so nobody has to wonder where the ears went.
+
+        `Advanced settings` holds what decides what a rig *is* rather than what it contains (`Step`, the bone
+        lengths, MMR's own re-typing). It is folded away and its rare rows are not drawn at all - `Debug`,
+        `Batch rigify's bone copies` and `Rules File` are commented out below, with their properties intact, the
+        same treatment the `Xray` and `Preset_Filter` rows already have.
         """
         layout = self.layout
         column = layout.column()
@@ -4242,18 +4304,23 @@ class RigifyChains(bpy.types.Operator):
         # rather than the operator. `draw` runs on every redraw while the dialog is open, so both fixes live
         # here - fill the rows from the preset if it changed, then adopt any group row the user moved.
         sync_preset(self, context)
+        # The checkbox is adopted *before* the branch below, so ticking it draws the family rows in the same frame
+        # rather than one redraw later. `sync_preset` runs first because applying a preset can set `Mode` itself.
+        edit_per_family(self)
         if self.Mode != 'ADVANCED':
             # adopt first (a group row the user moved wins), then mirror the family rows back into the group
-            # rows - unconditionally, so a family edited in Advanced cannot leave a Simple row showing a stale
+            # rows - unconditionally, so a family edited per family cannot leave a group row showing a stale
             # answer. `sync_group_fields` only writes the group properties and the snapshot, never the families,
             # so this cannot flatten a per-family choice (code review, handoff 9ai).
             adopt_group_edits(self)
             sync_group_fields(self)
         # Each dropdown gets a one-word header, which is what the user asked for ("a few header texts would be nice
         # to clarify what each dropdown does - Preset, Style") instead of the tooltip carrying it.
-        top = column.row(align=True)
-        top.label(text="Mode")
-        top.prop(self, "Mode", expand=True)
+        #
+        # The `Mode` dropdown is gone (2.33.6): it was two buttons in a row whose whole content was "how much
+        # detail do you want", which is a checkbox. `edit_per_family` mirrors `Mode` into it and adopts the click,
+        # so every reader of `Mode` is untouched.
+        column.prop(self, "Per_Family")
         preset = column.row(align=True)
         preset.label(text="Preset")
         preset.prop(self, "Preset", text="")
@@ -4287,22 +4354,29 @@ class RigifyChains(bpy.types.Operator):
                                                       "y" if preset_mismatch(self) == 1 else "ies"))
         save = column.row()
         save.operator(RigifyChainPresetSave.bl_idname, icon='FILE_TICK').Data = self._family_data()
-        # The style row (chains-38). It sits here rather than under `More settings` for a reason the doctrine
-        # above does not cover: `More settings` is for what decides what the rig *is*, and a style decides none
-        # of it - its whole effect is visible in the viewport, so hiding it would hide the feature. The folder
-        # button is the same one the presets use one row up: one file per style, editable by hand.
-        style_row = column.row(align=True)
-        style_row.label(text="Style")
-        style_row.prop(self, "Style", text="")
-        style_folder = style_row.row(align=True)
-        style_folder.operator(RigifyChainStyleFolder.bl_idname, text="", icon='FILE_FOLDER').Action = 'SHOW'
+        # The style row (chains-38), hidden from the dialog at 2.33.6 to free the panel up ("the visual styles are a
+        # nice feature, but I'm thinking of hiding it from the ui for now - we'll put it back when there are enough
+        # users to justify it. I'd just comment it out for now"). The `Style` property, the styles folder, the
+        # `RigifyChainStyleSave`/`RigifyChainStyleFolder` operators and everything in `RigStyles.py` all stay: a
+        # scene, a preset or a script can still set a style, the folder can still be opened from Blender's own
+        # operator search, and putting the rows back is uncommenting three statements. With them hidden every rig
+        # takes the shipped default style (`coolchou.json`, first in the list), which is what a fresh install runs
+        # anyway.
+        #
+        # style_row = column.row(align=True)
+        # style_row.label(text="Style")
+        # style_row.prop(self, "Style", text="")
+        # style_folder = style_row.row(align=True)
+        # style_folder.operator(RigifyChainStyleFolder.bl_idname, text="", icon='FILE_FOLDER').Action = 'SHOW'
+        #
         # The X-ray row is commented out at the user's request ("X-ray dropdown can be removed"). The property and
         # everything that reads it stay - a style still carries the answer, and a scene, a preset or a script can
         # still set it - so this only takes the row off the dialog.
         #
         # column.prop(self, "Xray")
-        style_save = column.row()
-        style_save.operator(RigifyChainStyleSave.bl_idname, icon='FILE_TICK')
+        #
+        # style_save = column.row()
+        # style_save.operator(RigifyChainStyleSave.bl_idname, icon='FILE_TICK')
         column.separator()
         if self.Mode == 'ADVANCED':
             current = None
@@ -4332,7 +4406,7 @@ class RigifyChains(bpy.types.Operator):
                 box.label(text="always: %s" % ", ".join("%s = %s" % (family, rig_type)
                                                         for family, rig_type in locked), icon='LOCKED')
             if mixed:
-                box.label(text="Advanced sets %s family by family" % ", ".join(mixed), icon='INFO')
+                box.label(text="Edit per family sets %s family by family" % ", ".join(mixed), icon='INFO')
         column.separator()
         column.prop(self, "Chain_Layers")
         column.prop(self, "Skirt_Master")
@@ -4349,10 +4423,22 @@ class RigifyChains(bpy.types.Operator):
             more.prop(self, "Step")
             more.prop(self, "Resample")
             more.prop(self, "Overwrite_Typed")
-            more.prop(self, "Batch_Rigify_Copies")
-            more.prop(self, "Debug")
+            # Three rows are off the panel from 2.33.6, with their properties and every reader intact - the same
+            # treatment `Xray` and `Preset_Filter` already have above:
+            #
+            # * `Batch_Rigify_Copies` - pure speed, on by default, and measured to produce a byte-identical rig. It
+            #   is not a decision a user makes; a probe or a script can still turn it off to compare.
+            # * `Debug` - console verbosity only. The trace text block is written either way, so nothing a user
+            #   needs is behind it, and it defaulted to *True*, which is a strange thing to offer in a dialog.
+            # * `Rules_File` - a raw path to the JSON mapping bone patterns to rigify types. The folder button in
+            #   the preset row and the `Rigify Chain Rules` operator (which can also write the defaults out) are the
+            #   way in for a user; the path row is for whoever is editing the file by hand, and `Rigify Chain Rules`
+            #   is still in Blender's operator search.
+            #
+            # more.prop(self, "Batch_Rigify_Copies")
+            # more.prop(self, "Debug")
             more.separator()
-            more.prop(self, "Rules_File")
+            # more.prop(self, "Rules_File")
             more.operator(RigifyChainTraceSave.bl_idname, icon='FILE_TICK')
             # Where a run's own record is, said where a user goes looking for it. The status bar carries the current
             # step while a run is going; everything else - every step, every check, the `timings:` line - is in this
