@@ -114,8 +114,13 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 RIG_VERSION = "v6"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-70"
+BUILD_TAG = "chains-71"
 BUILD = BUILD_TAG + (
+    ": 2.33.3 - the reshape gets a row to tick. 2.33.2 shipped the feature with no `draw` row for it, and this "
+    "operator's properties *are* the dialog, so a property nobody draws is a property nobody can set: the user ran "
+    "the setup with the master on and the reshape was simply never offered. One row in `draw`, beside the master's. "
+    "The rig is unchanged, so RIG_VERSION stays v6 - 2.33.2 built the same rig and only failed to ask for it. "
+    "Before that: "
     ": 2.33.2 - a skirt panel with too few hinges to curl gets more (rig version v6). Maruzensky deforms each skirt "
     "panel through **one** bone plus a leaf entirely outside the cloth (0 vertices; the chain is 0.351 m where only "
     "0.234 m is cloth), so the panel swings as a slab - and every hem this project quotes is read at the tip of that "
@@ -4295,6 +4300,11 @@ class RigifyChains(bpy.types.Operator):
         column.separator()
         column.prop(self, "Chain_Layers")
         column.prop(self, "Skirt_Master")
+        # The reshape needs its own row: the operator's properties *are* the dialog, and a property nobody draws is a
+        # property nobody can set. It was missing here at 2.33.2 and the feature was unreachable from the UI - the
+        # user's own report (*"I ran the pumpkin rig setup, and it seems the skirt reshape didn't run"*), with the
+        # master on and the reshape simply not offered.
+        column.prop(self, "Skirt_Reshape")
         column.prop(self, "More_Options")
         if self.More_Options:
             more = column.box()
