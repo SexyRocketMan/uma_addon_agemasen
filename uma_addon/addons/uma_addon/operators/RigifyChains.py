@@ -50,6 +50,8 @@ from mathutils import Matrix, Vector
 
 # The rig display styles: one JSON file per style in `<config>/uma_addon/styles/`, his own style shipped as the
 # default. Display only - the data, the apply, and the capture all live in `RigStyles` (handoff 9al/9am).
+from .SkirtReshape import SKIRT_HINGE_SPACING_M
+from .SkirtReshape import reshape_skirt_panels
 from .RigStyles import (STYLE_NONE, apply_style, capture_style, describe_style, ensure_style_files, forget_styles,
                         find_generated_rig, read_style, save_style, style_dir, style_filename, style_files,
                         style_items)
@@ -109,11 +111,27 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # wiring, a different bone layout); it is deliberately separate from `BUILD_TAG` below, which identifies the *build*
 # for the trace, the fleet probe and the stale-code guard, and moves on every commit that touches this file. One
 # place, so a bump is one edit: this line, and whatever the message being changed happens to say.
-RIG_VERSION = "v5"
+RIG_VERSION = "v6"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-69"
+BUILD_TAG = "chains-70"
 BUILD = BUILD_TAG + (
+    ": 2.33.2 - a skirt panel with too few hinges to curl gets more (rig version v6). Maruzensky deforms each skirt "
+    "panel through **one** bone plus a leaf entirely outside the cloth (0 vertices; the chain is 0.351 m where only "
+    "0.234 m is cloth), so the panel swings as a slab - and every hem this project quotes is read at the tip of that "
+    "leaf, overstating the cloth's own motion by about 1.85x. `operators/SkirtReshape.py` measures each panel's "
+    "**cloth** (its own vertices projected onto the root bone: the cloth starts 13-43% of the way *down* it, so a "
+    "subdivision over the whole bone would put its top joint above the skirt), then subdivides that stretch into "
+    "three bones, reusing the leaf rather than deleting it so nothing that names a bone breaks, and shares each "
+    "vertex's **existing** weight in that panel across the new bones by position - nothing invented, nothing else "
+    "replaced, so the ring's cross-panel blending and the `Hip`/`Waist` waistband survive, and that blend is where "
+    "the panel's only existing curve comes from. Behind *Reshape short skirt chains* (or `options.skirt_reshape`; "
+    "`skirt_hinges` forces a count and `skirt_hinge_spacing_m` changes the one-per-this-much rule), off by default "
+    "because it edits the model's own weights, and it runs before the chains are collected so the new bones reach "
+    "the metarig - measured: the metarig follows a bone that did not exist before the run to 0.0000 m, the model at "
+    "rest is unchanged to 2.5e-07 m, and the cloth's local bend goes from falling to rising (89.05 deg at the hem "
+    "against 30.90 for the single hinge). `skirt_master_check.py` takes `reshape` as a second argument and is 20/0 "
+    "on Maruzensky with it on. Before that: "
     ": 2.33.1 - the skirt master's lift turns each panel about its *own* axis (rig version v5). chou's `TRANSFORM` "
     "writes the owner's raw local X, and that is right for him for the same reason it was wrong for us: his panel "
     "roots are duplicates of the model's skeleton, while ours are rigify's FK controls, whose local X points within "
@@ -2257,6 +2275,14 @@ class RigifyChains(bpy.types.Operator):
         name="Skirt master control",
         description="Add one control that swings every skirt panel at once. Each panel keeps its own control on top, "
                     "so a single panel can still be corrected while the master is turned",
+        default=False,
+    )
+    Skirt_Reshape: BoolProperty(
+        name="Reshape short skirt chains",
+        description="A panel that deforms through fewer bones than its cloth has length for cannot curl - it swings "
+                    "as a slab. This subdivides the bone carrying the cloth and shares that cloth's existing weight "
+                    "across the new bones, so the panel bends instead. It edits the model's own weights, which is why "
+                    "it is off by default; the waistband's blend and every other bone's weights are left alone",
         default=False,
     )
     Batch_Rigify_Copies: BoolProperty(
@@ -4583,6 +4609,22 @@ class RigifyChains(bpy.types.Operator):
                                     % (family, ("[%s]" % pattern) if family in repeated else "",
                                        rig_type, where)
                                     for family, rig_type, where, pattern in typed_here) or "none"))
+
+        # The skirt reshape (2.33.2): a panel that deforms through fewer bones than its cloth has length for cannot
+        # curl, so it gets the missing hinges here - *before* the chains are collected, so the new bones are part of
+        # the model when the chains, the metarig and the rig are all built from it. Measured that way: the metarig
+        # follows a bone that did not exist before the run to 0.0000 m, and the model at rest is unchanged to
+        # 2.5e-07 m. Opt-in, because it rewrites the model's own weights.
+        if self.Step == 'FULL' and (bool(self.Skirt_Reshape) or bool(options.get("skirt_reshape", False))):
+            trace.step("the skirt reshape: hinges where the cloth asks for them")
+            try:
+                self._skirt_reshape = reshape_skirt_panels(
+                    model, trace, forced=options.get("skirt_hinges") or None,
+                    spacing=float(options.get("skirt_hinge_spacing_m", SKIRT_HINGE_SPACING_M)))
+            except Exception as error:  # noqa: BLE001 - a model whose cloth cannot be measured is still a model
+                trace.check("the skirt reshape ran", False, "%s: %s" % (type(error).__name__, error))
+                trace.info("skirt reshape: could not run (%s: %s); the rest of the run is unaffected"
+                           % (type(error).__name__, error))
 
         chains = self._collect_chains(model, rules, trace,
                                       weights=self._bone_weights(self._meshes, trace) if self._meshes else None,
