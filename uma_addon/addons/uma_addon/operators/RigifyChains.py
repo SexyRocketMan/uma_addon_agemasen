@@ -114,8 +114,17 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 RIG_VERSION = "v7"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-74"
+BUILD_TAG = "chains-75"
 BUILD = BUILD_TAG + (
+    ": 2.33.7 - the tooltips say what a setting does and stop there. The user: *\"I would trim down the tooltips - "
+    "they are a bit too verbose now. Maybe shorten them to a few sentences at most - give a technical user a dry "
+    "overview, nothing else.\"* The dropdown *items* were already trimmed to one line each at 2.27.0 (see the note "
+    "above `TYPE_CHOICES`), so this is the property and button tooltips: `Reshape short skirt chains` (four "
+    "sentences -> two, and the one fact a user must have - that it edits the model's own weights - kept, while the "
+    "reasoning behind the default moves into the comment beside it), `Skirt master control`, `Edit per family`, "
+    "`Preset`, `Overwrite Existing Types` and `Batch rigify's bone copies`, plus the preset / reload / rules "
+    "operator buttons. Nothing but text: no property, default, row or behaviour changed, so the rig is untouched "
+    "and RIG_VERSION stays v7. Before that: "
     ": 2.33.6 - the setup panel, slimmed, and the skirt master on by default (rig version stays v7 - the same rig "
     "for a given set of answers, only the answers it opens with changed). The user: *\"the panel is a bit too "
     "overwhelming for the user as it stands\"*. Four changes, and one consequence worth knowing. **`Mode` is now a "
@@ -748,7 +757,7 @@ TYPE_CHOICES = [
 #: is what the user reported ("Advanced mode is always selected whenever pumpkin rig is run").
 MODE_MIXED = "MIXED"
 GROUP_CHOICES = TYPE_CHOICES + [
-    (MODE_MIXED, "Mixed", "This group's families are set individually - Advanced shows them one by one"),
+    (MODE_MIXED, "Mixed", "This group's families are set individually - `Edit per family` shows them one by one"),
 ]
 
 SIMPLE_GROUPS = ("Hair", "Skirt", "Chest", "Tail", "Extras", "Other")
@@ -1946,8 +1955,7 @@ class RigifyChainPresetSave(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_preset"
     bl_label = "Save as preset"
-    bl_description = ("Write the family fields' current answers into one JSON file in the presets folder. Applying "
-                      "a preset fills the rows and nothing else")
+    bl_description = "Write the current rig type answers into one JSON file in the presets folder"
     bl_options = {'REGISTER'}
 
     Name: StringProperty(
@@ -2015,8 +2023,7 @@ class RigifyChainPresetReload(bpy.types.Operator):
 
     bl_idname = "uma.rigify_chain_preset_reload"
     bl_label = "Reload presets"
-    bl_description = ("Read the preset folder again, for a file added or edited outside Blender. A preset saved "
-                      "from here refreshes the list by itself")
+    bl_description = "Read the preset folder again, for a file added or edited outside Blender"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -2248,14 +2255,13 @@ class RigifyChains(bpy.types.Operator):
     # plain mirror would overwrite the user's click on the very next redraw.
     Per_Family: BoolProperty(
         name="Edit per family",
-        description="Answer every physics family on its own instead of one answer per group. Off shows the group "
-                    "rows - Hair, Skirt, Chest, Tail, Extras, Other - which is what most runs want",
+        description="Answer every physics family on its own instead of one answer per group",
         default=False,
     )
     Per_Family_Snapshot: StringProperty(name="Last per-family switch", default="", options={'HIDDEN'})
     Preset: EnumProperty(
         name="Preset",
-        description="Fills the rig type rows from a stored set of answers. Nothing picks one automatically - "
+        description="Fill the rig type rows from a stored set of answers. Nothing is chosen automatically - "
                     "`Default` is the rules table",
         items=preset_items,
         # an index, not a value: Blender requires that when `items` is a callback. `preset_items` always returns
@@ -2353,8 +2359,7 @@ class RigifyChains(bpy.types.Operator):
     )
     Overwrite_Typed: BoolProperty(
         name="Overwrite Existing Types",
-        description="Also re-type bones MMR already rigified (spine, limbs, fingers, head). Off keeps the body "
-                    "behaving exactly as it does now",
+        description="Also re-type the bones MMR already rigified (spine, limbs, fingers, head)",
         default=False,
     )
     Debug: BoolProperty(
@@ -2369,23 +2374,19 @@ class RigifyChains(bpy.types.Operator):
     # the labels that are compared against pre-2.33.6 fleet runs.
     Skirt_Master: BoolProperty(
         name="Skirt master control",
-        description="Add one control that swings every skirt panel at once. Each panel keeps its own control on top, "
-                    "so a single panel can still be corrected while the master is turned",
+        description="Add one control that swings every skirt panel at once. Each panel keeps its own control on top",
         default=True,
     )
     Skirt_Reshape: BoolProperty(
         name="Reshape short skirt chains",
-        description="A panel that deforms through fewer bones than its cloth has length for cannot curl - it swings "
-                    "as a slab. This subdivides the bone carrying the cloth and shares that cloth's existing weight "
-                    "across the new bones, so the panel bends instead. It edits the model's own weights, which is why "
-                    "it is off by default; the waistband's blend and every other bone's weights are left alone",
+        description="Give a panel more hinges when its cloth has length for them: subdivides the panel's bones and "
+                    "shares its existing weight across them. Edits the model's own weights, so it is off by default",
         default=False,
     )
     Batch_Rigify_Copies: BoolProperty(
         name="Batch rigify's bone copies",
-        description="Rigify switches object mode twice for every bone it copies, which is most of a rig run. This "
-                    "does the same copying with one mode switch per edit session instead - measured at 1.5x on a "
-                    "first character and 1.8x on a second, with an identical rig",
+        description="Copy rigify's bones with one mode switch per edit session instead of two per bone. Same rig, "
+                    "about 1.5x faster",
         default=True,
     )
     # Renamed from "More settings" at 2.33.6. The word "Advanced" used to be *taken* - it was the name of the
@@ -5284,11 +5285,10 @@ class RigifyChainRules(bpy.types.Operator):
 
     Action: EnumProperty(
         name="Action",
-        items=[('SHOW', "Open The Presets Folder", "Open the folder holding one file per preset, in the "
-                                                   "operating system's file browser. The rules table and the run "
-                                                   "options are in rigify_chains.json one level up"),
-               ('WRITE', "Write Defaults", "Overwrite the rules file with the built-in defaults (a backup of the "
-                                           "file it replaces is written beside it)"),
+        items=[('SHOW', "Open The Presets Folder", "Open the folder holding one file per preset. The rules table and "
+                                                   "run options are in rigify_chains.json one level up"),
+               ('WRITE', "Write Defaults", "Overwrite the rules file with the built-in defaults, keeping a backup of "
+                                           "what it replaces"),
                ('KEEP', "Write Only If Missing", "Leave an existing rules file alone")],
         default='SHOW',
     )
