@@ -51,11 +51,6 @@ class ModelProcessPanel(BasePanel, bpy.types.Panel):
         scene_props = context.scene.uma_scene
         prefs = context.preferences.addons[__addon_name__].preferences
         obj_props = getattr(context.active_object, "uma_object", None)
-
-        # The `Import` button that used to sit here was `bpy.ops.mmd_tools.import_model` and nothing else - no
-        # wrapper, no defaults of ours, no filter - so it was a second door onto a dialog mmd_tools already puts in
-        # `File > Import > MikuMikuDance Model (.pmx/.pmd)` and in its own panel. Removed (the user's call): what
-        # is left in this row are this add-on's own two steps.
         row = layout.row()
         row.operator(SetBoneCollections.bl_idname)
         row.operator(RefineBoneStructure.bl_idname)
@@ -251,12 +246,6 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
                     if scene_props.level3 != "None":
                         row.prop(scene_props, "level3")
 
-            # `action_index` is a scene property, so it outlives the list it pointed into: switch from a level with
-            # 1156 rows to one with a single row and the old index is past the end. Reading it unguarded raised
-            # `IndexError: bpy_prop_collection[index]: index 40 out of range, size 1` out of `draw`, and Blender
-            # stops a panel where it stopped - which is the reported "the list of actions is gone now, just the
-            # dropdown selectors are rendered". Clamped here for *reading*: the clamp is no longer written back,
-            # because a write here is an ID write during draw, which 5.x refuses (see `_fill_action_list`).
             def selected_action():
                 count = len(scene_props.filtered_actions)
                 if not count:
@@ -266,9 +255,6 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
 
             current = selected_action()
             fav_icon = 'FUND' if (current is not None and current.is_favorite) else 'HEART'
-            # The list is built by the filter updates, so a scene nobody has touched has none. The fill used to
-            # happen here; it now goes through a timer, because building the list writes scene ID properties and
-            # Blender 5.x refuses that during draw ("Writing to ID classes in this context is not allowed").
             if not scene_props.action_list_filled:
                 request_action_list()
             row = layout.row()
@@ -279,9 +265,6 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
                 box_row.operator(ApplyKeyAction.bl_idname)
             elif cat == 'tail':
                 box_row.operator(ApplyAction.bl_idname)
-            # Nothing to apply means nothing to apply: the buttons go dead rather than failing on a click, and the
-            # reason is written down. `action_list_hint` is the whole of that sentence, as a function so a probe can
-            # read it without a UI (the reported dead end was an empty list that said nothing).
             box_row.enabled = bool(scene_props.filtered_actions)
             col.template_list(
                 "UMA_UL_Action", "", 
@@ -293,10 +276,6 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
             hint = action_list_hint(scene_props)
             if hint:
                 col.label(text=hint, icon='INFO')
-            # The heart sits in its own row so the row can carry the disabled state: `layout.operator()` returns
-            # Blender's operator-properties object, and assigning to it raised
-            # `AttributeError: 'UMA_OT_toggle_favorite' object has no attribute 'enabled'` - which is the other half
-            # of the reported traceback, and it ended the whole panel's draw at that line.
             heart_row = box_row.row()
             heart_row.enabled = bool(scene_props.filtered_actions)
             heart_row.operator(ToggleFavorite.bl_idname, text="", icon=fav_icon)
@@ -338,13 +317,6 @@ class PhysicsandActionsPanel(BasePanel, bpy.types.Panel):
                     rows=14
                 )
 
-            # 预设菜单
-            # box = left.box().row(align=True)
-            # box.menu(BAC_MT_presets.__name__, text=BAC_MT_presets.bl_label, translate=False)
-            # box.operator(AddPresetBACMapping.bl_idname, icon='ADD')
-            # box.separator()
-            # box.operator('kumopult_bac.open_preset_folder', text="", icon='FILE_FOLDER')
-
             row = layout.row()
             pre_icon = 'HIDE_OFF' if scene_props.preview else 'HIDE_ON'
             row.operator(TogglePreview.bl_idname, icon=pre_icon, depress=scene_props.preview)
@@ -359,12 +331,7 @@ class ControllerPanel(BasePanel, bpy.types.Panel):
     def draw(self, context: bpy.types.Context):
         layout = self.layout
         obj_props = getattr(context.active_object, "uma_object", False)
-        # MMR's own controller button, moved here from MMR's panel (the user's request, 2.23.1): it is the first step
-        # of building a controller, and every button that does that now sits in one place, in the order they are used.
         layout.operator(MMRRig.bl_idname, icon_value=get_image_id("ctrl"))
-        # Pumpkin Rig directly under it (the user's request, 2.31.0): the two are the same job in two halves - the
-        # controller above, then the chains and the display style on top of it - and a user alternates between them,
-        # so the twist / IK / bake buttons, which act on a *finished* rig, now come after both.
         if RigifyChains is not None:
             layout.operator(RigifyChains.bl_idname, icon='MOD_ARMATURE')
             if RigifyChainRules is not None:
@@ -394,27 +361,15 @@ class ShadingLookPanel(BasePanel, bpy.types.Panel):
     def draw(self, context: bpy.types.Context):
         layout = self.layout
         scene_props = context.scene.uma_scene
-
-        # The shading controls live here rather than under "Processing Model": Shading and what it does to the look
-        # belong with the look (the user's request, 2.23.1).
         layout.operator(ApplyShader.bl_idname, icon="SHADING_RENDERED")
-        # the outline containment is a scene setting, so it is visible before Shading is applied and can be switched
-        # off there; the operator reads it at run time (docs/OUTLINES.md)
         layout.prop(scene_props, "fix_outlines")
         layout.prop(scene_props, "shader_control")
-        # The face-normal transfer (docs/SHADER_LOOK.md): a hidden static copy of the face turning with the head, and
-        # a data transfer of its custom split normals, so a facial morph does not drag the shading normals with it.
-        # One switch, because the two things it used to offer as options - separating the face into its own object
-        # first, and dropping the morphs that cannot move a piece - are what makes it work and are always on now.
         row = layout.row(align=True)
         row.prop(scene_props, "face_normals")
         if face_normals_module is not None:
             row.operator(FaceNormalsApply.bl_idname, text="", icon='DRIVER')
             row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
-        # The community joke, asked for by name and wired to nothing at all (2.31.0): a checkbox, so it looks like the
-        # switch above it, and `Properties.py` says in its own description that nothing reads it. Kept because it was
-        # requested; if it ever needs to *do* something, that is a different conversation.
-        layout.prop(scene_props, "pregnancy_toggle")
+        layout.prop(scene_props, "pregnancy_toggle") # DO NOT REMOVE
 
         if draw_shading_control is None:
             layout.label(text="UmaShaderControl.py is missing", icon='ERROR')
