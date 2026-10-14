@@ -9,10 +9,12 @@ kept, so he ships the slab too.
 
 What this does, per panel, and nothing else:
 
-1. **Measure the cloth**, not the bone. The panels' own vertices are projected onto their root bone's own axis and
-   the cloth is read off as `s_min..s_max` along it. Measured: the cloth starts 13-43% of the way *down* the bone -
-   the head sits above the skirt, in the hip - so a subdivision over the bone's whole length would put its topmost
-   joint outside the cloth, doing nothing.
+1. **Measure the cloth**, not the bone. Every vertex the **panel** deforms - the ones weighted to any of the panel's
+   own bones, not only to its root - is projected onto the root bone's own axis and the cloth is read off as
+   `s_min..s_max` along it. Measured: the cloth starts 13-43% of the way *down* the bone - the head sits above the
+   skirt, in the hip - so a subdivision over the bone's whole length would put its topmost joint outside the cloth,
+   doing nothing. (2.33.2 read the root's own vertices alone; see 2.33.5 below for why that is only the whole panel
+   on some models and half of it on others.)
 2. **Reshape** to `count` bones spanning that measured cloth: the root keeps its head (the hip joint the skirt hangs
    from) and is shortened; the existing leaf moves into the cloth and any further bones are created parented and
    connected, so the chain runs hip -> ... -> hem with every joint inside the cloth. No bone is deleted, which keeps
@@ -30,6 +32,37 @@ ring with legs inside it is its classic failure case. Every input this needs is 
 Measured through the whole pipeline (reshape before the rig is generated): the metarig follows the reshaped *and
 newly created* bones to 0.0000 m, the model at rest is unchanged to 2.5e-07 m, and the cloth's local bend goes from
 falling to rising - 89.05 deg at the hem against 30.90 deg for the shipped single hinge.
+
+## 2.33.5 - the cloth is the panel's, not the root bone's (the user's report, measured by `skirt_panel_span_check.py`)
+
+The user, on `silence_suzuka_upgraded.pmx`: *"the skirt bones generated after the reshape don't cover the whole span
+of the skirt. It's already present on Maruzensky, but less noticeable due to her short skirt - on a model like
+silence_suzuka_upgraded the bones cover barely half of the skirt, and the rest of it moves like a slab. I also
+expected Suzuka to get more skirt bones after refinement - but she ended up with only two."*
+
+Step 1 above looked only at the vertices weighted to the panel's **root** bone. That is the whole panel on exactly
+one kind of model - Maruzensky, whose leaf carries 0 vertices - and it is a fraction of it wherever a model spreads
+its skirt weight across the panel's bones. Measured, per panel, against every vertex the panel deforms:
+
+| model | measured by the root alone | of the panel | panel weight past that end |
+|---|---|---|---|
+| Maruzensky | 0.144-0.204 m | **100%** | **0%** |
+| `silence_suzuka_upgraded` | 0.182-0.189 m | **50%** | **48-59%** |
+| the reference model | 0.012-0.182 m | 6-68% | 78-98% |
+
+Three things follow from one wrong number, and all three are the report. The subdivided bones covered the top half
+of Suzuka's skirt and the bottom half became a single rigid piece on the last new bone, because every vertex below
+`s_max` is left where it is and `_redistribute` clamps it to `shares[-1] = 1.0`. She got three bones where the panel
+asks for four, because `bones_for_span` was reading half a panel (`round(0.368 / 0.10) = 4`, against `round(0.188 /
+0.10) = 2` floored to the three-bone minimum). And the "already deforms through enough bones" skip kept the model
+out of it entirely on the reference, which is why the defect survived: the reference measures 0.012 m of a ~0.22 m
+panel, which reads as "cloth short, and it already deforms through 3 bones", so it was left alone for the wrong
+reason. With the panel measured properly it is still left alone - now because 0.22 m of cloth is exactly what three
+bones are for.
+
+Suzuka after the fix: 10 panels, each measured at its own 0.363-0.372 m, **4 bones** per panel, and **0%** of the
+panel's weight past the measured end. Maruzensky is untouched to the byte - its leaf carries no weight, so the root
+alone was already its whole panel and the two measurements are the same three numbers.
 
 ## 2.33.4 - the split was computed on the wrong bone length (a real bug, found by `skirt_reshape_scale_check.py`)
 
@@ -111,11 +144,33 @@ def skinned_meshes(model):
     return out
 
 
-def cloth_of(model, meshes, root):
-    """Where the vertices weighted to `root` sit along that bone's own axis: `(s_min, s_max, vertices)`.
+def cloth_of(model, meshes, root, chain=None):
+    """Where this **panel's** cloth sits along the root bone's own axis: `(s_min, s_max, vertices)`.
 
     `s = 0` is the bone's head and `s = 1` its tail, so a panel whose cloth is at `0.42..1.05` is one whose cloth
-    starts nearly halfway down the bone and reaches its tip. Returns `None` when there is too little of it to trust.
+    starts nearly halfway down the bone and reaches its tail.
+
+    **The cloth is every vertex the panel deforms, not only the ones weighted to its root bone** (2.33.5). Reading
+    the root alone is the whole panel on exactly one kind of model - the one whose skirt weight all sits on the root,
+    which is Maruzensky, whose leaf carries 0 vertices - and it is only *part* of the panel wherever a model spreads
+    its skirt weight across the panel's bones:
+
+    | model | cloth the root alone measures | of the panel | panel weight past that end |
+    |---|---|---|---|
+    | Maruzensky | 0.144-0.204 m | **100%** | 0% |
+    | `silence_suzuka_upgraded` | 0.182-0.189 m | **50%** | 48-59% |
+    | the reference model | 0.012-0.182 m | 6-68% | 78-98% |
+
+    Everything downstream is derived from this one number - where the joints go, how many bones the panel gets, and
+    which vertices are inside the subdivided stretch - and every vertex *below* it is left where it is and then
+    clamped onto the last new bone as a single rigid piece. So on Suzuka the subdivided bones covered the top half of
+    the skirt and the bottom half moved as one slab, which is the user's report: *"the bones cover barely half of
+    the skirt, and the rest of it moves like a slab."* She also got three bones where the panel asks for four,
+    because `bones_for_span` was reading half a panel.
+
+    On the reference model the same misreading was hidden by the skip rule - it measures 0.012 m of a ~0.22 m panel,
+    which counts as "cloth short, and it already deforms through 3 bones", so it is left alone for the wrong reason.
+    With the panel measured properly it is still left alone, now because 0.22 m of cloth is what three bones are for.
     """
     bone = model.data.bones.get(root)
     if bone is None:
@@ -126,12 +181,14 @@ def cloth_of(model, meshes, root):
         return None
     axis = direction.normalized()
     to_armature = model.matrix_world.inverted()
+    names = set(chain) if chain else {root}
     positions = []
     for obj, per_vertex in meshes:
         for index, weights_here in per_vertex.items():
-            if root in weights_here:
-                local = to_armature @ (obj.matrix_world @ obj.data.vertices[index].co)
-                positions.append((local - bone.head_local).dot(axis) / length)
+            if not names.intersection(weights_here):
+                continue
+            local = to_armature @ (obj.matrix_world @ obj.data.vertices[index].co)
+            positions.append((local - bone.head_local).dot(axis) / length)
     if len(positions) < MIN_VERTICES:
         return None
     return min(positions), max(positions), len(positions)
@@ -252,7 +309,7 @@ def reshape_skirt_panels(model, trace, spacing=SPACING_M, forced=None):
     geometry = {}
     for stem, chain in sorted(panels(model).items()):
         root = chain[0]
-        extent = cloth_of(model, meshes, root)
+        extent = cloth_of(model, meshes, root, chain)
         if extent is None:
             continue
         geometry[stem] = {"chain": chain, "root": root, "s_min": extent[0], "s_max": extent[1],

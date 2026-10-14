@@ -111,11 +111,30 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # wiring, a different bone layout); it is deliberately separate from `BUILD_TAG` below, which identifies the *build*
 # for the trace, the fleet probe and the stale-code guard, and moves on every commit that touches this file. One
 # place, so a bump is one edit: this line, and whatever the message being changed happens to say.
-RIG_VERSION = "v6"
+RIG_VERSION = "v7"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-72"
+BUILD_TAG = "chains-73"
 BUILD = BUILD_TAG + (
+    ": 2.33.5 - the skirt reshape measures the **panel's** cloth, not only the share its root bone owns (rig version "
+    "v7). The user, on `silence_suzuka_upgraded.pmx`: *\"the skirt bones generated after the reshape don't cover the "
+    "whole span of the skirt [...] the bones cover barely half of the skirt, and the rest of it moves like a slab. I "
+    "also expected Suzuka to get more skirt bones after refinement - but she ended up with only two.\"* 2.33.2 "
+    "projected onto the root bone only the vertices weighted to that root, which is the whole panel on exactly one "
+    "kind of model - Maruzensky, whose leaf carries 0 vertices - and a fraction of it wherever a model spreads its "
+    "skirt weight across the panel's bones. Everything downstream comes from that one number: the joint positions, "
+    "the bone count, and which vertices are inside the subdivided stretch - and every vertex *below* it is left "
+    "alone and then clamped onto the last new bone as one rigid piece. Measured per panel by "
+    "`skirt_panel_span_check.py`, before: Suzuka 0.182-0.189 m of a 0.363-0.372 m panel (**50%**), with 48-59% of "
+    "the panel's weight past the measured end - the slab - and 3 bones where `round(0.368/0.10)` asks for 4; "
+    "Maruzensky 100% (its leaf carries no weight, so the root alone *was* its whole panel, which is why the defect "
+    "hid there); the reference model 0.012 m of a 0.218 m panel, left alone by the skip rule for the wrong reason. "
+    "After: Suzuka measures each panel's own 0.363-0.372 m, gets **4 bones** and has **0%** of its weight past the "
+    "end; Maruzensky is unchanged to the byte (same 0.144-0.207 m, same 3 bones); and the reference now measures "
+    "0.218-0.283 m and is still left alone, now because that is what three bones are for. A new `_03` has no "
+    "`_03_Handle` beside it - measured, **no `_Handle` group on this model carries any weight at all**, so that is a "
+    "bone-list cosmetic and not a deformation. Found by `skirt_panel_span_check.py`, a new probe that asks the "
+    "module what it measures and compares it with every vertex the panel actually deforms. Before that: "
     ": 2.33.4 - the skirt reshape splits a panel's weights where it measured them. 2.33.2 measured each panel's "
     "cloth in fractions of its root bone and laid the new joints out on that same basis, but then called "
     "`_reshape_chain` - which shortens that very bone to the first joint - *before* re-reading the bone's length for "
