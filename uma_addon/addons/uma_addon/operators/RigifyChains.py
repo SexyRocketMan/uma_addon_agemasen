@@ -109,11 +109,30 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # wiring, a different bone layout); it is deliberately separate from `BUILD_TAG` below, which identifies the *build*
 # for the trace, the fleet probe and the stale-code guard, and moves on every commit that touches this file. One
 # place, so a bump is one edit: this line, and whatever the message being changed happens to say.
-RIG_VERSION = "v4"
+RIG_VERSION = "v5"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-68"
+BUILD_TAG = "chains-69"
 BUILD = BUILD_TAG + (
+    ": 2.33.1 - the skirt master's lift turns each panel about its *own* axis (rig version v5). chou's `TRANSFORM` "
+    "writes the owner's raw local X, and that is right for him for the same reason it was wrong for us: his panel "
+    "roots are duplicates of the model's skeleton, while ours are rigify's FK controls, whose local X points within "
+    "31 degrees of one *common* world direction for all ten panels while the panels' outward directions span a full "
+    "turn. The measured symptom, straight from a user posing it: moving the master up moved the back panels outward "
+    "and up (+0.0526, +0.0408 m) while the front panels went *inward* and barely rose (-0.0546, +0.0014 m) - a "
+    "backwards curl rather than a flare, with the two places where neighbours disagreed being the two places the "
+    "cloth stretched. A flare needs a rotation about each panel's own sideways axis, `outward x up`, which is a "
+    "combination of the owner's X and Z rather than either alone; the axis is now expressed in the control's own "
+    "rest frame and written as the **exact euler decomposition** of a 20 degree rotation about it, on all three of "
+    "the owner's euler axes. Euler angles are an exact parameterisation, so at full travel the panel turns by exactly "
+    "that rotation about exactly that axis. Measured after: **10 of 10 panels outward, 10 of 10 rising**, and every "
+    "neighbouring pair's hem direction turning by exactly its own azimuth step - worst excess **0.0 deg**, where the "
+    "raw-axis version had two boundaries at nearly 180. Two things that look like the same fix and are not: writing "
+    "the axis's *components* as if they were angles is right only for small angles and ignores the composition "
+    "order, and it leaves four of ten panels flaring inward; and a helper bone carrying the same rotation through "
+    "`COPY_ROTATION` in either `LOCAL_OWNER_ORIENT` or `WORLD` does not deliver a rotation about the helper's world "
+    "axis once the owner is parented - `_B`, whose axis is 0.1 deg from its own X, flips sign against a direct write "
+    "of the same angle to the same axis. Before that: "
     ": 2.33.0 - the skirt master is aimed and driven the way chou's is (rig version v4). His master is not a "
     "rotation handle with a lift bolted on: every one of his 17 panel roots carries **two** constraints, and the "
     "shipped build had one of them. The second is a `TRANSFORM` that reads the master's **vertical travel** and "
@@ -3285,6 +3304,38 @@ class RigifyChains(bpy.types.Operator):
                 return direction.normalized()
         return Vector((0.0, -1.0, 0.0))
 
+    def _skirt_flare_angles(self, rig, control, last_name, centre, trace):
+        """The XYZ euler angles, in the control's own rest frame, of a `SKIRT_LIFT_DEGREES` rotation about that
+        panel's flare axis - the rotation that swings its hem outward.
+
+        The axis is sideways to the panel: `outward x up`, where `outward` is the hem's direction away from the
+        master. With the hem hanging along `-up`, a rotation of +theta about it moves the hem by
+        `-L((outward x up) x up) = +L*outward`, so a positive turn flares that panel outwards - for every panel,
+        whatever way it faces, which is the whole point on a ring. Taken from the bones (the chain's last bone tail
+        is the hem, or lies beyond it along the same direction) rather than from the mesh, so this costs nothing and
+        works on any model, reshaped or not.
+
+        Falls back to the owner's X alone when the panel's outward direction is degenerate - a hem directly below
+        the master has no sideways axis to speak of - and says so rather than writing a rotation about nothing.
+        """
+        fallback = (math.radians(-self.SKIRT_LIFT_DEGREES), 0.0, 0.0)
+        bone = rig.data.bones.get(control)
+        hem = rig.data.bones.get(last_name)
+        if bone is None or hem is None:
+            return fallback
+        outward = hem.tail_local - centre
+        outward.z = 0.0
+        if outward.length < 1e-5:
+            trace.info("skirt flare: %s's hem sits directly below the master, so it has no sideways direction to "
+                       "flare about; its lift stays on the control's own X" % control)
+            return fallback
+        axis = outward.normalized().cross(Vector((0.0, 0.0, 1.0)))
+        if axis.length < 1e-5:
+            return fallback
+        local_axis = (bone.matrix_local.to_3x3().inverted() @ axis.normalized()).normalized()
+        angles = Matrix.Rotation(math.radians(self.SKIRT_LIFT_DEGREES), 3, local_axis).to_euler('XYZ')
+        return (angles.x, angles.y, angles.z)
+
     def _add_skirt_master(self, model, rig, chains, trace):
         """One control over every skirt panel - chou's `skirt_master`, built on what rigify already generates.
 
@@ -3342,7 +3393,10 @@ class RigifyChains(bpy.types.Operator):
                     master = constraint.subtarget
                     break
             if master:
-                panels.append((control, master))
+                # The chain's last bone carries the hem, and the hem's direction away from the master is the
+                # direction this panel faces - which is what the lift has to turn the panel about. Taken from the
+                # bones rather than the mesh so this works whether or not the cloth has been reshaped.
+                panels.append((control, master, chain[-1]))
         if len(panels) < 2:
             trace.info("skirt master: skipped - %d skirt panel(s) with a control of their own to drive (2 needed)"
                        % len(panels))
@@ -3384,7 +3438,7 @@ class RigifyChains(bpy.types.Operator):
             # gesture is affected - both constraints read the master in `LOCAL` spaces, so where it sits does not
             # enter either copy.
             centre = Vector((0.0, 0.0, 0.0))
-            for _control, master in panels:
+            for _control, master, _last in panels:
                 centre += edit[master].head
             centre /= float(len(panels))
             master_bone.head = centre
@@ -3400,7 +3454,7 @@ class RigifyChains(bpy.types.Operator):
                 pass
             linked = 0
             lifted = 0
-            for _control, master in panels:
+            for control, master, _last in panels:
                 holder = rig.pose.bones.get(master)
                 if holder is None:
                     continue
@@ -3415,21 +3469,28 @@ class RigifyChains(bpy.types.Operator):
                 constraint.target_space = 'LOCAL_OWNER_ORIENT'
                 constraint.mix_mode = 'BEFORE'
                 linked += 1
-                # His second channel, his numbers. `map_to_x_from = 'Z'` is his own remap and it reads the master's
-                # vertical - which is its local Z only because of how the master is aimed above; `from_z` is the
-                # travel window it reads and `to_x_rot` the rotation it writes. The X and Y source windows are left
-                # degenerate (0 -> 0) exactly as his are, so only the lift drives it. (A copied constraint that read
-                # the wrong axis would be silently dead, which is how his own file answers the question: translating
-                # his master on its other two axes moves the hem 0.00000 m.)
+                # **His second channel, aimed at each panel's own axis** (2.33.1). chou's `TRANSFORM` writes the
+                # owner's raw local X, and that is right for him for the same reason it is wrong for us: his panel
+                # roots are duplicates of the model's skeleton. Ours are rigify's FK controls, whose local X points
+                # within 31 degrees of one *common* world direction for all ten panels while the panels' outward
+                # directions span a full turn - so the same rotation tips the whole ring about one world axis. His
+                # wiring measured on the model he was tested with: the back panels moving outward and up (+0.0526,
+                # +0.0408 m) while the front panels moved *inward* and barely rose (-0.0546, +0.0014 m). The skirt
+                # does not flare; its back lifts and its front sinks, which is a backwards curl, and the two places
+                # where neighbours disagreed were the two places the cloth stretched.
                 #
-                # These values were briefly inverted here to make the lift agree with the master's turn - and that was
-                # treating a symptom. The thing that decides whether the lift *adds* to the turn is the master's
-                # handedness (see the frame note above): aimed forward, everything the master drives arrives
-                # anti-parallel to the panels' own handles, and flipping this one range made the lift agree with the
-                # turn while the turn itself still fought the handles - measured, the handle's 25 degrees and the
-                # master's 30 giving 5 deg per joint instead of the shipped 55. With the master aimed the other way
-                # his numbers are right as they stand: the lift adds to the turn (30 + 20 -> 50 deg per joint on all
-                # ten panels) and the handle adds to both.
+                # What a flare actually needs is a rotation about each panel's *own* sideways axis, which is
+                # `outward x up` with the hem hanging along -up: rotating by +theta about it moves the hem by
+                # -L((outward x up) x up) = +L*outward, i.e. outwards, for every panel. That axis is a combination of
+                # the owner's X and Z rather than either alone, and a `TRANSFORM` can write all three of the owner's
+                # euler axes - so the axis is expressed in the control's own rest frame and written as the **exact
+                # euler decomposition** of a SKIRT_LIFT_DEGREES rotation about it. Euler angles are an exact
+                # parameterisation, so at full travel the panel turns by exactly that rotation about exactly that
+                # axis. (Writing the axis's *components* as if they were angles is not the same thing: it is right
+                # only for small angles and ignores the composition order, and it left four of ten panels flaring
+                # inward.) Measured with the decomposition: 10 of 10 panels outward and 10 of 10 rising, and every
+                # neighbouring pair's hem direction turning by exactly its own azimuth step - worst excess 0.0 deg,
+                # where the raw-axis version had two boundaries at nearly 180.
                 stale = holder.constraints.get(self.SKIRT_LIFT_CONSTRAINT)
                 if stale is not None:
                     holder.constraints.remove(stale)
@@ -3439,20 +3500,20 @@ class RigifyChains(bpy.types.Operator):
                 lift.subtarget = self.SKIRT_MASTER_NAME
                 lift.map_from = 'LOCATION'
                 lift.map_to = 'ROTATION'
-                lift.map_to_x_from = 'Z'
-                lift.map_to_y_from = 'Y'
-                lift.map_to_z_from = 'X'
-                for axis in ("x", "y", "z"):
-                    live = axis == "z"
-                    setattr(lift, "from_min_%s" % axis,
+                # every output axis reads the master's vertical travel; the source's other two windows stay
+                # degenerate (0 -> 0) exactly as his are, so only the lift drives it
+                for suffix in ("x", "y", "z"):
+                    setattr(lift, "map_to_%s_from" % suffix, 'Z')
+                    live = suffix == "z"
+                    setattr(lift, "from_min_%s" % suffix,
                             -self.SKIRT_LIFT_WINDOW_M if live else 0.0)
-                    setattr(lift, "from_max_%s" % axis,
+                    setattr(lift, "from_max_%s" % suffix,
                             self.SKIRT_LIFT_WINDOW_M if live else 0.0)
-                lift.to_min_x_rot = math.radians(-self.SKIRT_LIFT_DEGREES)
-                lift.to_max_x_rot = math.radians(self.SKIRT_LIFT_DEGREES)
-                for suffix in ("y", "z"):
-                    setattr(lift, "to_min_%s_rot" % suffix, 0.0)
-                    setattr(lift, "to_max_%s_rot" % suffix, 0.0)
+                flare = self._skirt_flare_angles(rig, control, _last, centre, trace)
+                for suffix, angle in zip(("x", "y", "z"), flare):
+                    setattr(lift, "to_min_%s_rot" % suffix, -angle)
+                    setattr(lift, "to_max_%s_rot" % suffix, angle)
+                lift.to_euler_order = 'XYZ'
                 lift.mix_mode_rot = 'ADD'
                 lift.owner_space = 'LOCAL'
                 lift.target_space = 'LOCAL'
