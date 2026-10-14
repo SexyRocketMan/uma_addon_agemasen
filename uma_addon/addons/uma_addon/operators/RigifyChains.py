@@ -38,6 +38,7 @@ keyed by character and costume that this used to autodetect are retired (handoff
 `docs/PRESETS_AND_RULES.md` is the map; the handoff's section 9aa is how it got that way.
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -108,11 +109,29 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # wiring, a different bone layout); it is deliberately separate from `BUILD_TAG` below, which identifies the *build*
 # for the trace, the fleet probe and the stale-code guard, and moves on every commit that touches this file. One
 # place, so a bump is one edit: this line, and whatever the message being changed happens to say.
-RIG_VERSION = "v3"
+RIG_VERSION = "v4"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-67"
+BUILD_TAG = "chains-68"
 BUILD = BUILD_TAG + (
+    ": 2.33.0 - the skirt master is aimed and driven the way chou's is (rig version v4). His master is not a "
+    "rotation handle with a lift bolted on: every one of his 17 panel roots carries **two** constraints, and the "
+    "shipped build had one of them. The second is a `TRANSFORM` that reads the master's **vertical travel** and "
+    "writes it into the panel root's own X rotation - 4 degrees per centimetre over a +-5 cm window, saturating at "
+    "+-20 degrees, `mix_mode_rot: ADD` so it stacks on the `COPY_ROTATION` instead of replacing it - and the master "
+    "itself is clamped to 5 cm up and 5 mm down. Measured on our rig before it was ported: the master answered "
+    "**0.00000 m** on all three of its own axes, and chou's own constraint, transplanted, is worth 0.18-0.19 m of "
+    "hem per 5 cm. The frame had to change with it, and *which way* the frame points turned out to matter more than "
+    "the direction. A bone's local Y is always its own length and turning a bone about its own axis is the default "
+    "grab, so a master standing up made the natural motion the skirt's *twist* (0.11997 m against 0.26608 m on its "
+    "local X). Aiming it along the character's front-to-back axis fixes that - but aimed *forward* the master's "
+    "local X comes out at -X, and then everything the master drives arrives anti-parallel to the panels' own handles: "
+    "measured, the handle's 25 degrees and the master's 30 together gave **5** deg per joint (`|30 - 25|`) where the "
+    "shipped frame gives **55** and chou's own rig gives 55.35. Aimed backward the frame keeps local X = +X and "
+    "Z = +Z (up), so the handle adds to the master again (55), the lift adds to the turn (30 + 20 -> 50), and chou's "
+    "constraint numbers cross over unmodified. The master also moves from the first panel's control to the centre of "
+    "the ring, which is only a gesture: both constraints read it in `LOCAL` spaces, so where it sits does not enter "
+    "either copy. Before that: "
     ": 2.32.0 - the skirt gets one master control (rig version v3). The user asked for chou's skirt setup, and the "
     "measurement made it much smaller than the design note assumed: a skirt panel is already a rigify tail chain whose "
     "FK control drives a per-segment cascade that turns 30 degrees into a constant 30.0 degrees per joint (chou's own: "
@@ -3228,8 +3247,45 @@ class RigifyChains(bpy.types.Operator):
     #: The skirt master's own names, kept here because a re-run has to find what a previous run made.
     SKIRT_MASTER_NAME = "UMA_skirt_master"
     SKIRT_MASTER_CONSTRAINT = "UMA_skirt_master_link"
+    #: chou's master is a short bone lying **horizontally**, at the skirt's own height, aimed along the character's
+    #: front-to-back axis. Ours used to stand up, which put the world vertical on the one axis an animator turns by
+    #: default; ours is aimed *backward* along that axis rather than forward, and that is a measured requirement
+    #: rather than a taste - the sense decides whether the panels' own handles add to the master or fight it. See the
+    #: frame note in `_add_skirt_master`.
+    SKIRT_MASTER_LENGTH = 0.10
+    #: chou's **second** channel on the same bone, read off his file by `skirt_master_channels_probe.py`: every one of
+    #: his 17 panel roots carries a `TRANSFORM` (`map_from: LOCATION`, `map_to: ROTATION`) that turns the master's
+    #: vertical travel into that root's own X rotation - 4 degrees per centimetre over a +-5 cm window, saturating at
+    #: +-20 degrees - with `mix_mode_rot: ADD`, so it stacks on the `COPY_ROTATION` rather than replacing it. His own
+    #: master is limited to 5 cm up and 5 mm down, and the window is enforced by both his constraint and that limit;
+    #: the numbers below are his, verbatim. Measured on our rig: 0.18-0.19 m of hem across all ten panels per 5 cm,
+    #: against 0.00000 m for the shipped rotation-only master.
+    SKIRT_LIFT_CONSTRAINT = "UMA_skirt_master_lift"
+    SKIRT_TRAVEL_CONSTRAINT = "UMA_skirt_master_travel"
+    SKIRT_LIFT_WINDOW_M = 0.05
+    SKIRT_LIFT_DEGREES = 20.0
+    SKIRT_LIFT_UP_M = 0.05
+    SKIRT_LIFT_DOWN_M = 0.005
 
-    def _add_skirt_master(self, rig, chains, trace):
+    def _skirt_master_forward(self, model):
+        """Which way the character faces, in armature space - the direction the master's own length points.
+
+        Taken from the toes, the same measurement `AddonOperators.gaze_direction` uses for the eyes (the toe sits in
+        front of the ankle on every humanoid rig), so it does not depend on which way an exporter happened to aim
+        anything. The fallback is the armature's own `-Y`, which is the direction `mmd_tools` leaves a model facing.
+        """
+        for side in ("L", "R"):
+            toe = model.data.bones.get("Toe_" + side)
+            ankle = model.data.bones.get("Ankle_" + side)
+            if toe is None or ankle is None:
+                continue
+            direction = toe.head_local - ankle.head_local
+            direction.z = 0.0
+            if direction.length > 1e-5:
+                return direction.normalized()
+        return Vector((0.0, -1.0, 0.0))
+
+    def _add_skirt_master(self, model, rig, chains, trace):
         """One control over every skirt panel - chou's `skirt_master`, built on what rigify already generates.
 
         The measurement that made this small (`skirt_master_probe.py`, `docs/SKIRT_RIG_STUDY.md` 8b): a skirt panel is
@@ -3237,13 +3293,39 @@ class RigifyChains(bpy.types.Operator):
         cascade* - each segment copies the one above it - which turns 30 degrees into a constant **30.0 degrees per
         joint** and 0.261 m of hem on this model's three-segment panels. chou's own rig does exactly that (a constant
         ~29.2 degrees per joint, 0.271 m over twelve), so the cascade does not have to be added at all. What his rig
-        has and ours did not is **one bone over every panel**: that, and nothing else, is what this builds.
+        has and ours did not is **one bone over every panel**: that is what this builds.
 
-        One bone plus one `COPY_ROTATION` per panel control, in `LOCAL` -> `LOCAL_OWNER_ORIENT` with `BEFORE` - the
-        space chou's file uses for the same job, so one rotation is read in each panel's own orientation. Measured: 4
-        of 4 panels moved (24.9-29.1 degrees each, the same spread chou's ring shows), and a panel keeps its own
-        authority afterwards (its own control still turns it 25 degrees). Nothing is added to the model's bones and no
-        weight is touched, so this cannot change how the mesh deforms - only what moves the panels.
+        **Two channels, because chou's has two** (2.33.0). `skirt_master_channels_probe.py` read his file at the
+        channel level for the first time and found that every one of his 17 panel roots carries *two* constraints on
+        the master, not one:
+
+        * a `COPY_ROTATION` in `LOCAL` -> `LOCAL_OWNER_ORIENT` with `BEFORE` - the space that lets one rotation be
+          read in each panel's own orientation, so a single turn swings a ring of differently-aimed panels;
+        * a `TRANSFORM` (`map_from: LOCATION`, `map_to: ROTATION`, `mix_mode_rot: ADD`) that turns the master's
+          **vertical travel** into the panel root's own X rotation - 4 deg/cm over a +-5 cm window, saturating at
+          +-20 degrees - so the master answers being *moved*, not only turned. His master is clamped to 5 cm up and
+          5 mm down (`LIMIT_LOCATION`, `LOCAL`), which is the half of the mechanism a port is most likely to drop.
+
+        Measured on our rig before porting it: the shipped rotation-only master answered **0.00000 m** on all three of
+        its own translation axes, and his `TRANSFORM` transplanted is worth 0.18-0.19 m of hem per 5 cm across all ten
+        panels.
+
+        **The frame is part of the feature, and so is its handedness.** chou's master is a short bone lying
+        horizontally; ours used to stand up, and since a bone's local Y is its own length, that put the world vertical
+        on the axis an animator turns by default - so the *natural* motion was the skirt's twist (0.11997 m, against
+        0.26608 m on its local X), which is what "it doesn't respond to rotation properly" was. Aiming it along the
+        character's front-to-back axis fixes the direction. **Which way along that axis is not cosmetic**: a panel's
+        own handle turns its raw local X and the master reaches the same bone through `LOCAL_OWNER_ORIENT`, so the
+        master's own sense decides whether the two add. Aimed forward (tail toward -Y, local X = -X) they came out
+        anti-parallel - the handle's 25 degrees and the master's 30 together gave **5** deg per joint, where the
+        shipped 2.32.0 frame gives **55** and chou's own rig gives 55.35. Aimed backward the frame keeps local X = +X
+        and Z = +Z (up); then the handle adds to the master (55), the lift adds to the turn (30 + 20 -> 50), and chou's
+        constraint numbers are right as they stand.
+
+        Measured through the shipped switch: 4 of 4 panels moved in the first probe (24.9-29.1 degrees each, the same
+        spread chou's ring shows), 10 of 10 in `skirt_master_check.py`, and a panel keeps its own authority afterwards
+        (its own control still turns it 25 degrees). Nothing is added to the model's bones and no weight is touched,
+        so this cannot change how the mesh deforms - only what moves the panels.
         """
         panels = []
         for rule, chain in chains:
@@ -3264,7 +3346,7 @@ class RigifyChains(bpy.types.Operator):
         if len(panels) < 2:
             trace.info("skirt master: skipped - %d skirt panel(s) with a control of their own to drive (2 needed)"
                        % len(panels))
-            return {"panels": len(panels), "linked": 0}
+            return {"panels": len(panels), "linked": 0, "lifted": 0}
         active = bpy.context.view_layer.objects.active
         try:
             for obj in bpy.context.scene.objects:
@@ -3276,11 +3358,37 @@ class RigifyChains(bpy.types.Operator):
             master_bone = edit.get(self.SKIRT_MASTER_NAME)
             created = master_bone is None
             if created:
-                first = edit[panels[0][1]]
                 master_bone = edit.new(self.SKIRT_MASTER_NAME)
-                master_bone.head = first.head
-                master_bone.tail = first.head + Vector((0.0, 0.0, 0.10))
                 master_bone.use_deform = False
+            # **The frame, and its handedness** (2.33.0). Two things have to hold, and the second one was found the
+            # hard way - by measuring the wrong one first and shipping it into a probe run.
+            #
+            # *First, the direction.* A bone's local Y is always its own length and turning a bone about its own axis
+            # is the default grab, so a master standing up put the world vertical on the one axis an animator reaches
+            # for - measured, 0.11997 m of hem against 0.26608 m on its local X. That is the "it doesn't respond to
+            # rotation properly" report, and aiming the master along the character's front-to-back axis fixes it: the
+            # same grab now swings the skirt.
+            #
+            # *Second, the sense along that axis*, which is not cosmetic. A panel's own handle turns its raw local X;
+            # the master's rotation reaches that same bone through `COPY_ROTATION` in `LOCAL_OWNER_ORIENT`, and which
+            # sense arrives depends on the master's own frame. Aimed forward - tail toward -Y, which puts local X at
+            # -X - the two come out **anti-parallel**: measured on all ten panels, the handle's 25 degrees and the
+            # master's 30 together gave **5** deg per joint, which is `|30 - 25|`. The shipped 2.32.0 frame (standing,
+            # local X = +X) gives **55**, and chou's own rig gives 55.35 for the same pair - so anti-parallel is a
+            # regression, not a taste. Aimed *backward* the frame keeps local X = +X and Z = +Z (up), and then the
+            # handle adds to the master again, the lift's source axis is still "up", and chou's own constraint
+            # numbers cross over unmodified.
+            forward = self._skirt_master_forward(model)
+            # The ring's centre, not the first panel's control: the panels surround the hip, and starting from
+            # `panels[0]` made the master's home depend on the order the chains happened to come out in. Only the
+            # gesture is affected - both constraints read the master in `LOCAL` spaces, so where it sits does not
+            # enter either copy.
+            centre = Vector((0.0, 0.0, 0.0))
+            for _control, master in panels:
+                centre += edit[master].head
+            centre /= float(len(panels))
+            master_bone.head = centre
+            master_bone.tail = centre - forward * self.SKIRT_MASTER_LENGTH
             bpy.ops.object.mode_set(mode='OBJECT')
             # Show it with the panels rather than in whatever collection happens to be active.
             try:
@@ -3291,6 +3399,7 @@ class RigifyChains(bpy.types.Operator):
             except Exception:  # noqa: BLE001 - a bone in the wrong collection is cosmetic
                 pass
             linked = 0
+            lifted = 0
             for _control, master in panels:
                 holder = rig.pose.bones.get(master)
                 if holder is None:
@@ -3306,6 +3415,63 @@ class RigifyChains(bpy.types.Operator):
                 constraint.target_space = 'LOCAL_OWNER_ORIENT'
                 constraint.mix_mode = 'BEFORE'
                 linked += 1
+                # His second channel, his numbers. `map_to_x_from = 'Z'` is his own remap and it reads the master's
+                # vertical - which is its local Z only because of how the master is aimed above; `from_z` is the
+                # travel window it reads and `to_x_rot` the rotation it writes. The X and Y source windows are left
+                # degenerate (0 -> 0) exactly as his are, so only the lift drives it. (A copied constraint that read
+                # the wrong axis would be silently dead, which is how his own file answers the question: translating
+                # his master on its other two axes moves the hem 0.00000 m.)
+                #
+                # These values were briefly inverted here to make the lift agree with the master's turn - and that was
+                # treating a symptom. The thing that decides whether the lift *adds* to the turn is the master's
+                # handedness (see the frame note above): aimed forward, everything the master drives arrives
+                # anti-parallel to the panels' own handles, and flipping this one range made the lift agree with the
+                # turn while the turn itself still fought the handles - measured, the handle's 25 degrees and the
+                # master's 30 giving 5 deg per joint instead of the shipped 55. With the master aimed the other way
+                # his numbers are right as they stand: the lift adds to the turn (30 + 20 -> 50 deg per joint on all
+                # ten panels) and the handle adds to both.
+                stale = holder.constraints.get(self.SKIRT_LIFT_CONSTRAINT)
+                if stale is not None:
+                    holder.constraints.remove(stale)
+                lift = holder.constraints.new('TRANSFORM')
+                lift.name = self.SKIRT_LIFT_CONSTRAINT
+                lift.target = rig
+                lift.subtarget = self.SKIRT_MASTER_NAME
+                lift.map_from = 'LOCATION'
+                lift.map_to = 'ROTATION'
+                lift.map_to_x_from = 'Z'
+                lift.map_to_y_from = 'Y'
+                lift.map_to_z_from = 'X'
+                for axis in ("x", "y", "z"):
+                    live = axis == "z"
+                    setattr(lift, "from_min_%s" % axis,
+                            -self.SKIRT_LIFT_WINDOW_M if live else 0.0)
+                    setattr(lift, "from_max_%s" % axis,
+                            self.SKIRT_LIFT_WINDOW_M if live else 0.0)
+                lift.to_min_x_rot = math.radians(-self.SKIRT_LIFT_DEGREES)
+                lift.to_max_x_rot = math.radians(self.SKIRT_LIFT_DEGREES)
+                for suffix in ("y", "z"):
+                    setattr(lift, "to_min_%s_rot" % suffix, 0.0)
+                    setattr(lift, "to_max_%s_rot" % suffix, 0.0)
+                lift.mix_mode_rot = 'ADD'
+                lift.owner_space = 'LOCAL'
+                lift.target_space = 'LOCAL'
+                lifted += 1
+            # ...and the master's own travel, clamped the way his is: a lift channel that can be driven past its own
+            # window is a control whose last centimetre does nothing, so the limit and the window are sized together.
+            master_pose = rig.pose.bones.get(self.SKIRT_MASTER_NAME)
+            if master_pose is not None:
+                travel = master_pose.constraints.get(self.SKIRT_TRAVEL_CONSTRAINT)
+                if travel is None:
+                    travel = master_pose.constraints.new('LIMIT_LOCATION')
+                    travel.name = self.SKIRT_TRAVEL_CONSTRAINT
+                travel.owner_space = 'LOCAL'
+                travel.use_min_x = travel.use_max_x = False
+                travel.use_min_y = travel.use_max_y = False
+                travel.use_min_z = travel.use_max_z = True
+                travel.min_z = -self.SKIRT_LIFT_DOWN_M
+                travel.max_z = self.SKIRT_LIFT_UP_M
+                travel.use_transform_limit = True
             bpy.context.view_layer.update()
         finally:
             if active is not None and active.name in bpy.data.objects:
@@ -3316,9 +3482,16 @@ class RigifyChains(bpy.types.Operator):
         trace.check("the skirt panels answer one master control", linked == len(panels),
                     "%d of %d panel control(s) linked to %s%s"
                     % (linked, len(panels), self.SKIRT_MASTER_NAME, "" if created else " (the bone was already there)"))
-        trace.info("skirt master: %s (%s) drives %d panel(s) - turn it to swing every skirt panel at once; each panel "
-                   "keeps its own control on top" % (self.SKIRT_MASTER_NAME, "created" if created else "reused", linked))
-        return {"panels": len(panels), "linked": linked, "created": created}
+        trace.check("every linked panel also answers the master's lift", lifted == linked,
+                    "%d of %d linked panel control(s) carry %s (%.1f deg over +-%.0f cm, clamped to +%.0f/%.0f cm)"
+                    % (lifted, linked, self.SKIRT_LIFT_CONSTRAINT, self.SKIRT_LIFT_DEGREES,
+                       self.SKIRT_LIFT_WINDOW_M * 100.0, self.SKIRT_LIFT_UP_M * 100.0,
+                       self.SKIRT_LIFT_DOWN_M * 100.0))
+        trace.info("skirt master: %s (%s) drives %d panel(s) - turn it to swing every skirt panel at once, and move "
+                   "it up (%.0f cm) or down (%.0f cm) to flare or settle them; each panel keeps its own control on top"
+                   % (self.SKIRT_MASTER_NAME, "created" if created else "reused", linked,
+                      self.SKIRT_LIFT_UP_M * 100.0, self.SKIRT_LIFT_DOWN_M * 100.0))
+        return {"panels": len(panels), "linked": linked, "lifted": lifted, "created": created}
 
     def _wire_model_to_chains(self, model, rig, chains, trace, release_parents=True, resample="keep",
                               chain_deform="rigid", chain_link="world"):
@@ -4595,7 +4768,7 @@ class RigifyChains(bpy.types.Operator):
         # from a rules file (`options.skirt_master`), the way the other rig-shaping choices can.
         if bool(self.Skirt_Master) or bool(options.get("skirt_master", False)):
             try:
-                self._add_skirt_master(rig, chains, trace)
+                self._add_skirt_master(model, rig, chains, trace)
             except Exception as error:  # noqa: BLE001 - a rig without the master is still a rig
                 trace.check("the skirt panels answer one master control", False, "%s" % error)
                 trace.info("skirt master: could not be added (%s: %s)" % (type(error).__name__, error))
