@@ -37,6 +37,7 @@ table is what a run uses until a preset is chosen, so a model's rig is the same 
 keyed by character and costume that this used to autodetect are retired (handoff 9bd).
 `docs/PRESETS_AND_RULES.md` is the map; the handoff's section 9aa is how it got that way.
 """
+import copy
 import json
 import math
 import os
@@ -114,8 +115,34 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 RIG_VERSION = "v8"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-77"
+BUILD_TAG = "chains-78"
 BUILD = BUILD_TAG + (
+    ": 2.33.10 - the rules file in use is brought up to date with this build's table, on a run (rig version stays "
+    "v8). The user, after 2.33.9: *\"we should be able to control the default rules between versions 100% - they are "
+    "not for the user to change. Should we overwrite/create the default ruleset on install?\"* The problem was real: "
+    "`load_rules` uses a rules file's table **instead of** the shipped one, so until now a rule added to "
+    "`DEFAULT_RULES` reached **nobody who already had a rules file** - 2.33.9 put four skirt rules in the shipped "
+    "table and they did nothing on this machine, whose config table was thirteen rules written a week earlier, and "
+    "the answer had to be duplicated in code to reach an install at all. The policy, decided by the user: **a "
+    "pattern we ship is ours**. A shipped pattern the file lacks is **added**; a shipped pattern whose value differs "
+    "is **refreshed**, with the value it replaced written into the file's own `housekeeping_rules_table` note; "
+    "`options` keys we ship and the file lacks are filled in and existing ones are never overwritten (those are the "
+    "user's choices - `chain_link`, `resample`, `never_rig`); a pattern the file carries and we do not ship is left "
+    "exactly as it is; a backup is written beside the file first. `rules_housekeeping.py` in the DevTools repo has "
+    "done this by hand since `chains-29` with exactly this doctrine - what was missing was that it is manual, and "
+    "that its list of rules was a hand-copy of the table, so a new rule was invisible to it. This runs on `invoke` "
+    "and on `execute`, before the rows and the run read the table, and never from `draw` or at import. Three "
+    "deliberate refusals: a file with **no `rules` array** is left alone (adding one would flip a run from the "
+    "built-in table to a frozen copy of it), an **explicitly passed `Rules_File`** is never touched (a probe's table "
+    "or a user's per-character one), and a file that will not parse is reported rather than repaired. Two bugs this "
+    "pass shipped in its first draft and its own edge-case test caught: the `was` value of a refreshed rule was "
+    "recorded **by reference** and then cleared, so the note read `which the file had as {}`; and the insertion "
+    "point was 'before the first bare skip', which put a new rule ahead of the table's leading `_Handle$` skip - the "
+    "exact mistake this table's own comment records (`a handle bone in the ear chain`, `worst 0.01000 m at "
+    "Ear_03_L_Handle`), because the resolver only treats the *leading* run of skips as leading. Measured on this "
+    "machine: one run took the file from 13 rules to 17, wrote `rigify_chains.before_housekeeping.json`, wrote the "
+    "note, and typed the same model's skirt as `spines.basic_tail (the rules table)` where the run before it said "
+    "`(the skirt family list)`. Before that: "
     ": 2.33.9 - every skirt family a uma ships is rigged as a skirt, not just `Sp_Hi_MSkirt` (rig version v8). The "
     "rules table had **one** skirt rule, so a model whose plate skirt is named anything else fell through to the "
     "`unmatched_families` fallback: flat `basic.super_copy` stubs, one control per bone, no chain - and **no skirt "
@@ -776,6 +803,148 @@ def write_default_rules(path=None):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(DEFAULT_RULES, handle, indent=2)
     return path
+
+
+#: The backup a housekeeping pass leaves beside the rules file. Same name the offline `rules_housekeeping.py` uses,
+#: so a file brings its own history whichever tool touched it last; a second pass in the same minute gets a stamp.
+HOUSEKEEPING_BACKUP = "rigify_chains.before_housekeeping.json"
+
+
+def housekeep_rules_file(trace=None, path=None):
+    """Bring the rules file **in use** up to date with the table this build ships. Returns a summary dict.
+
+    Why this exists (2.33.10): `load_rules` reads `<config>/uma_addon/rigify_chains.json` and, when that file carries
+    any rules at all, uses **its table instead of the shipped one** - deliberately, so a hand-edited table is never
+    overwritten behind the user's back. The cost was invisible until it bit: a rule added to `DEFAULT_RULES` reached
+    **nobody who already had a rules file**. 2.33.9 put four skirt rules in the shipped table and they did nothing on
+    the development machine, whose config table was thirteen rules written a week earlier - the draw rows, the chain
+    types and the skirt master all still read the old table, and the answer had to be duplicated in code
+    (`SKIRT_FAMILY_ANSWER`) to reach an install at all.
+
+    The rule this pass follows, decided by the user: **a pattern we ship is ours**. So:
+
+    * a shipped pattern the file is missing is **added**, in front of the first bare `skip` rule (the `^Sp_`
+      catch-all), or the catch-all would claim those bones first;
+    * a shipped pattern the file already carries **is refreshed** when the value differs, and the value it replaced
+      is written into the note below, so the change is recoverable and explained rather than silent;
+    * a pattern the file carries and we do not ship is **left exactly as it is** - that is the user's own rule;
+    * `options` keys we ship and the file lacks are **filled in** and existing ones are never overwritten: those are
+      the user's choices (`chain_link`, `resample`, `never_rig`, ...), not our defaults;
+    * a backup is written beside the file before anything is saved.
+
+    Three deliberate refusals. A file with **no `rules` array at all** is left alone - `load_rules` only uses a file's
+    table when it has one, so adding rules there would flip a run from the built-in table to a frozen copy of it.
+    An **explicitly passed `Rules_File` is never touched** (the caller checks; a probe's own table or a user's
+    per-character one must survive), and neither is a file that will not parse. And it never raises: a rules file
+    that cannot be written is a message, not a failed rig run.
+    """
+    path = path or config_path()
+    if not os.path.isfile(path):
+        return {"path": path, "changed": False, "why": "no rules file - the built-in table is in use"}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError) as error:
+        return {"path": path, "changed": False, "why": "it would not parse (%s)" % error}
+    if not isinstance(data, dict):
+        return {"path": path, "changed": False, "why": "it is not a JSON object"}
+    rules = data.get("rules")
+    if not isinstance(rules, list) or not rules:
+        return {"path": path, "changed": False,
+                "why": "it carries no rules array, so the built-in table is what a run uses"}
+
+    shipped = {rule["pattern"]: rule for rule in DEFAULT_RULES["rules"] if rule.get("pattern")}
+    present = {str(rule.get("pattern")): rule for rule in rules if isinstance(rule, dict)}
+
+    added, refreshed = [], []
+    for pattern, rule in shipped.items():
+        current = present.get(pattern)
+        if current is None:
+            added.append(pattern)
+        elif json.dumps(current, sort_keys=True) != json.dumps(rule, sort_keys=True):
+            # `deepcopy` on the *was* value rather than a reference to it: `current` is the very dict the two lines
+            # below clear and refill, so a reference recorded here is empty by the time the note is written and the
+            # note reads "which the file had as {}" - measured in this pass's own edge-case test, and the same class
+            # of aliasing that the `parameters` copy below exists to avoid.
+            refreshed.append({"pattern": pattern, "was": copy.deepcopy(current)})
+            current.clear()
+            current.update(copy.deepcopy(rule))
+    if added:
+        # **After the leading skips and before the catch-all** - both halves matter, and the first version of this
+        # got the first one wrong:
+        #
+        # * the shipped table opens with a bare `_Handle$` skip whose entire job is to keep handle bones out of the
+        #   chains. A new rule inserted ahead of it claims `Sp_Wa_MSkirt0_BBL_00_Handle` for the skirt chain - the
+        #   exact mistake this table's own comment records, caught then as `worst 0.01000 m at Ear_03_L_Handle`. The
+        #   resolver also only treats the *leading* run of skips as leading, so a non-skip rule at index 0 demotes
+        #   `_Handle$` and the resolved rules land in front of it;
+        # * a rule inserted after the trailing `^Sp_` catch-all is never reached at all.
+        #
+        # So: walk past the leading skips, then stop at the first bare skip that comes after a typed rule.
+        index = len(rules)
+        seen_typed = False
+        for position, current in enumerate(rules):
+            if not isinstance(current, dict):
+                continue
+            if current.get("skip") and not current.get("type"):
+                if seen_typed:
+                    index = position
+                    break
+            else:
+                seen_typed = True
+        for pattern in added:
+            rules.insert(index, copy.deepcopy(shipped[pattern]))
+            index += 1
+
+    filled = [key for key, value in DEFAULT_RULES["options"].items() if key not in (data.get("options") or {})]
+    if filled:
+        options = data.setdefault("options", {})
+        for key in filled:
+            options[key] = copy.deepcopy(DEFAULT_RULES["options"][key])
+
+    if not (added or refreshed or filled):
+        return {"path": path, "changed": False, "why": "already current", "rules": len(rules)}
+
+    backup = os.path.join(os.path.dirname(path), HOUSEKEEPING_BACKUP)
+    if os.path.exists(backup):
+        backup = os.path.join(os.path.dirname(path),
+                              HOUSEKEEPING_BACKUP.replace(".json", "_%s.json" % time.strftime("%Y%m%d_%H%M%S")))
+    try:
+        shutil.copy2(path, backup)
+    except OSError as error:
+        return {"path": path, "changed": False, "why": "the backup could not be written (%s)" % error}
+
+    lines = ["%s: brought up to date with this build's table." % time.strftime("%Y-%m-%d")]
+    if added:
+        lines.append("Added (a rule this build ships and the file did not have): %s."
+                     % ", ".join("`%s`" % pattern for pattern in added))
+    for entry in refreshed:
+        lines.append("Refreshed `%s`, which the file had as %s."
+                     % (entry["pattern"], json.dumps(entry["was"], sort_keys=True)))
+    if filled:
+        lines.append("Filled in options the file was missing: %s." % ", ".join("`%s`" % key for key in filled))
+    lines.append("Nothing else was touched - options already in the file and rules this build does not ship are "
+                 "yours and are left as they are. Backup: %s." % os.path.basename(backup))
+    data["housekeeping_rules_table"] = " ".join(lines)
+    data["version"] = DEFAULT_RULES.get("version", data.get("version"))
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+    except OSError as error:
+        return {"path": path, "changed": False, "why": "it could not be written (%s)" % error}
+
+    summary = {"path": path, "changed": True, "added": added, "refreshed": [e["pattern"] for e in refreshed],
+               "filled": filled, "backup": backup, "rules": len(rules)}
+    if trace is not None:
+        trace.info("rules file: brought up to date (%s) - added %s, refreshed %s, filled %s; backup %s"
+                   % (os.path.basename(path), ", ".join(added) or "none", ", ".join(summary["refreshed"]) or "none",
+                      ", ".join(filled) or "none", os.path.basename(backup)))
+    else:
+        print("[rigify_chains] rules file %s brought up to date: added %s, refreshed %s, filled %s (backup %s)"
+              % (os.path.basename(path), ", ".join(added) or "none", ", ".join(summary["refreshed"]) or "none",
+                 ", ".join(filled) or "none", os.path.basename(backup)))
+    return summary
 
 
 # --------------------------------------------------------------------------------------------------------
@@ -4357,6 +4526,11 @@ class RigifyChains(bpy.types.Operator):
         """
         reset_dialog_state(self)
         trace = Trace(self.Debug)
+        # The rules file is brought up to date *before* the rows are filled from it, so the dialog shows what the run
+        # will do. Skipped for an explicitly chosen `Rules_File`: that is somebody else's table (a probe's, or a
+        # user's per-character one) and this pass has no business editing it. Never in `draw`, and never at import.
+        if not self.Rules_File:
+            housekeep_rules_file(trace)
         self._refresh_families(context, trace, keep=False)
         model, _meshes = self._find_model_armature(context, trace)
         # The dialog *states* a detected step, so it has to be the step the run takes: "Step: Wire only - ...
@@ -4799,6 +4973,10 @@ class RigifyChains(bpy.types.Operator):
             trace.info("%s is already rigged: %d chain bone(s) follow %s, so this run has nothing to generate or "
                        "attach and will re-apply the display only" % (model.name, len(wired_bones), wired_rig.name))
 
+        # ...and the rules file this run is about to read is brought up to date first, so the table a run uses is the
+        # one this build ships wherever the file does not say otherwise. An explicit `Rules_File` is left alone.
+        if not self.Rules_File:
+            housekeep_rules_file(trace)
         rules, options, source = load_rules(bpy.path.abspath(self.Rules_File) if self.Rules_File else None)
         # `load_rules` hands back the *cached* options dict, and the two lines below write into it - so without
         # this copy they were editing module-level state for the rest of the Blender session. Measured
