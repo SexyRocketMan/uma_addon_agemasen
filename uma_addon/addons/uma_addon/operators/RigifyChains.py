@@ -111,11 +111,32 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 # wiring, a different bone layout); it is deliberately separate from `BUILD_TAG` below, which identifies the *build*
 # for the trace, the fleet probe and the stale-code guard, and moves on every commit that touches this file. One
 # place, so a bump is one edit: this line, and whatever the message being changed happens to say.
-RIG_VERSION = "v7"
+RIG_VERSION = "v8"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-76"
+BUILD_TAG = "chains-77"
 BUILD = BUILD_TAG + (
+    ": 2.33.9 - every skirt family a uma ships is rigged as a skirt, not just `Sp_Hi_MSkirt` (rig version v8). The "
+    "rules table had **one** skirt rule, so a model whose plate skirt is named anything else fell through to the "
+    "`unmatched_families` fallback: flat `basic.super_copy` stubs, one control per bone, no chain - and **no skirt "
+    "master at all**, because the master selects its panels by the *rule's* collection rather than by the group a "
+    "family is filed under. Measured: 20 of the 125 models in the pool have a skirt in that state, led by "
+    "`Sp_Hi_CSkirt0` (9 models), `Sp_Wa_MSkirt1` (5) and `Sp_Hi_CSkirt1` (2). `Sp_Wa_MSkirt0` shows the shape of it "
+    "exactly - the family is *already* in the `Skirt` collection (`GROUP_PREFIXES` knows that name), so a user sees a "
+    "Skirt group and assumes it is rigged like one, while the run says `skirt master: skipped - 0 skirt panel(s) with "
+    "a control of their own to drive (2 needed)`. Four rules added - `^Sp_Wa_MSkirt`, `^Sp_Hi_CSkirt`, "
+    "`^Sp_Si_MSkirt`, `^Sp_Hi_Hem` - all `spines.basic_tail` in the `Skirt` collection with the same "
+    "`copy_rotation_axes` and `chain_deform: bbone` the existing skirt rule uses, and the same three prefixes joined "
+    "the group map. Measured on `1025_00` with a rules file carrying just that one rule: chains 52 -> 28 (a "
+    "`basic_tail` panel is one chain per panel where `super_copy` was one control per *bone*), the families move from "
+    "`Extras`/`basic.super_copy` to `Skirt`/`spines.basic_tail`, and the master goes from `skipped` to "
+    "`UMA_skirt_master (created) drives 10 panel(s)`. **Deliberately not included**: the `Tp_*`/`Pc_*` families of "
+    "the same names (`Tp_Hi_MSkirt0_FL_00`, `Tp_Hi_SkirtRoot0_FL_00`, `Pc_Wa_MSkirt1_FL_00`) are single root bones "
+    "with no `_Handle` companions, so a chain rule would invent a panel where the model has an attachment point. The "
+    "whole list is patterns rather than one `^Sp_.*[Ss]kirt` for that reason. `operators/SkirtReshape.py` follows "
+    "with the same four prefixes (`SKIRT_PREFIXES`) plus a `NOT_A_PANEL` guard on `Root`, since the reshape is the "
+    "part a rules file cannot reach - measured on the two `CSkirt` models, **22 panels** over 0.23-0.83 m of cloth "
+    "now deforming through 1-4 bones that the module wants 3-5 for. Before that: "
     ": 2.33.8 - the skirt reshape is on by default, and two things the fleet found in it are fixed (rig version "
     "stays v7). It was off for one reason - it rewrites a model's own weights - and that reason is now a "
     "measurement rather than an assumption: `fleet_chains.ps1 -Sample 40` on both labels at `chains-75` found "
@@ -489,6 +510,42 @@ def stale_source():
     return ("Blender is running the %s module, which was loaded before the file on disk was edited (same tag, so "
             "the tag cannot tell you): the code in memory is not the code on disk" % BUILD_TAG)
 
+#: **The skirt families, in code, because the rules table is only a seed** (2.33.9). `load_rules` reads
+#: `<config>/uma_addon/rigify_chains.json` and, when that file carries any rules at all, uses **its table instead of
+#: the shipped one** - deliberately, so a hand-edited table is never overwritten. The consequence is easy to miss and
+#: it bit this build: adding the skirt rules below to `DEFAULT_RULES` changed nothing on any install that already had
+#: a rules file. Measured on the development machine, whose config table is 13 rules written before these existed:
+#: `Sp_Wa_MSkirt0` stayed a `basic.super_copy` stub in the `Skirt` collection and the run still reported
+#: `skirt master: skipped - 0 skirt panel(s) with a control of their own to drive (2 needed)`.
+#:
+#: So a skirt-named family that *no* rule in the table in use names is answered here instead - and the answer is the
+#: same rule the table carries, so a fresh install and an old one build the same rig. The trace names the source, so
+#: which of the two answered is never a guess: `the rules table` against `the skirt family list`.
+SKIRT_FAMILY_PREFIXES = ("Sp_Hi_MSkirt", "Sp_Wa_MSkirt", "Sp_Si_MSkirt", "Sp_Hi_CSkirt", "Sp_Hi_Hem")
+#: The rule a skirt-named family gets when nothing in the table names it. The same type, collection and chain
+#: settings as the rules in `DEFAULT_RULES` below - `spines.basic_tail` is what makes it a *chain*, and a chain is
+#: what the skirt master needs: it looks for a panel's own `_master` control, and a `basic.super_copy` family has one
+#: control per bone and no cascade, so the master finds no panel to drive however the family is grouped.
+SKIRT_FAMILY_ANSWER = {
+    "type": "spines.basic_tail",
+    "collection": "Skirt",
+    "min_bones": 2,
+    "parameters": {"copy_rotation_axes": [True, True, True]},
+    "chain_deform": "bbone",
+}
+#: The `Tp_*`/`Pc_*` families that share the skirt *names* while being single root bones with no `_Handle`
+#: companions. They must not match, and they do not: this list is all `Sp_`.
+SKIRT_FAMILY_PREFIX_NOT = ("Tp_", "Pc_")
+
+
+def skirt_family(family):
+    """Is this family a skirt panel, by the name list above? (`Tp_`/`Pc_` roots aside.)"""
+    name = family or ""
+    if any(name.startswith(prefix) for prefix in SKIRT_FAMILY_PREFIX_NOT):
+        return False
+    return any(name.startswith(prefix) for prefix in SKIRT_FAMILY_PREFIXES)
+
+
 DEFAULT_RULES = {
     "version": 2,
     "comment": ("Baseline: the chain families and rig types of the animator's own Maruzensky metarig. "
@@ -514,6 +571,33 @@ DEFAULT_RULES = {
         {"pattern": "^Sp_Hi_Tail0", "type": "limbs.spline_tentacle", "collection": "Tail",
          "min_bones": 2, "parent": "Hip"},
         {"pattern": "^Sp_Hi_MSkirt", "type": "spines.basic_tail", "collection": "Skirt", "min_bones": 2,
+         "parameters": {"copy_rotation_axes": [True, True, True]}, "chain_deform": "bbone"},
+        # The other skirt families a real uma actually ships (2.33.9). The rule above was the only one, so every
+        # model whose plate skirt is named differently fell through to the `unmatched_families` fallback - flat
+        # `basic.super_copy` stubs, one control per bone, no chain - and to no skirt master, because the master
+        # selects panels by **the rule's** collection rather than by the group a family is filed under. Measured over
+        # the 125-model pool: 20 of them have a skirt family in this state (`Sp_Hi_CSkirt0` 9 models, `Sp_Wa_MSkirt1`
+        # 5, `Sp_Hi_CSkirt1` 2, and one each of `Sp_Wa_MSkirt0`, `Sp_Si_MSkirt0`, `Sp_Hi_Hem0`, `Tp_Hi_MSkirt0`,
+        # `Tp_Hi_SkirtRoot0`, `Tp_Hi_MSkirtRoot0`, `Pc_Wa_MSkirt1`). The four patterns below are the ones that are
+        # shaped like panels - a chain of `_NN` deform bones with `_NN_Handle` companions, 2 or more deep:
+        #
+        #   Sp_Wa_MSkirt1_L   -> _00, _01 (+ handles)      a waisted skirt        (1070_00, 1001_02)
+        #   Sp_Hi_CSkirt0_B   -> _00.._03 (+ handles)      a plate / circle skirt (1025_00, 1014_00)
+        #   Sp_Si_MSkirt0_B   -> _00, _01 (+ handles)      a side skirt           (1062_90)
+        #   Sp_Hi_Hem0_F      -> _00, _01 (+ handles)      a hem                  (1032_90)
+        #
+        # **Deliberately not included**, and this is why the list is patterns rather than `^Sp_.*[Ss]kirt`: the
+        # `Tp_*` and `Pc_*` families of the same name are *roots*, one or two bones with no `_Handle` companions
+        # (`Tp_Hi_MSkirt0_FL_00`, `Pc_Wa_MSkirt1_FL_00`, `Tp_Hi_SkirtRoot0_FL_00`), so a chain rule would invent a
+        # panel where the model has an attachment point. `min_bones: 2` would refuse most of them anyway, which is
+        # exactly the kind of accidental safety this table should not rely on.
+        {"pattern": "^Sp_Wa_MSkirt", "type": "spines.basic_tail", "collection": "Skirt", "min_bones": 2,
+         "parameters": {"copy_rotation_axes": [True, True, True]}, "chain_deform": "bbone"},
+        {"pattern": "^Sp_Hi_CSkirt", "type": "spines.basic_tail", "collection": "Skirt", "min_bones": 2,
+         "parameters": {"copy_rotation_axes": [True, True, True]}, "chain_deform": "bbone"},
+        {"pattern": "^Sp_Si_MSkirt", "type": "spines.basic_tail", "collection": "Skirt", "min_bones": 2,
+         "parameters": {"copy_rotation_axes": [True, True, True]}, "chain_deform": "bbone"},
+        {"pattern": "^Sp_Hi_Hem", "type": "spines.basic_tail", "collection": "Skirt", "min_bones": 2,
          "parameters": {"copy_rotation_axes": [True, True, True]}, "chain_deform": "bbone"},
         # One chest bone has no chain to belong to: the front chest ribbon is a single weighted bone, and a
         # chain rig type refuses a one-bone chain (rigify's `min_chain_length` is 2). It gets the animator's
@@ -723,6 +807,9 @@ GROUP_PREFIXES = (
     ("Sp_Ch_", "Chest"),         # chest cloth: jacket, collar, bust, chest ribbons
     ("Sp_Hi_MSkirt", "Skirt"),
     ("Sp_Wa_MSkirt", "Skirt"),
+    ("Sp_Si_MSkirt", "Skirt"),   # a side skirt: `Sp_Si_MSkirt0_B_00`, 2 bones deep (1062_90). Paired with the rules
+    ("Sp_Hi_CSkirt", "Skirt"),   # a plate / circle skirt: `Sp_Hi_CSkirt0_B_00`, 2-4 bones deep (9 models in the pool)
+    ("Sp_Hi_Hem", "Skirt"),      # a hem: `Sp_Hi_Hem0_F_00`, 2 bones deep (1032_90)
     ("Tp_Hi_MSkirt", "Skirt"),
     ("Sp_Hi_", "Extras"),        # hip ribbons, leaves, pareos, hip accessories
     ("Sp_Ne_", "Extras"),        # neck ribbon
@@ -1388,15 +1475,25 @@ def resolve_rule_modes(model, rules, family_modes, table_modes, fixed, never, tr
                 if chosen is not None and chosen != table_modes.get(family):
                     mode = chosen
                     break
+            carries = None      # whatever typed this family when the table did not, so its settings come along
             if mode is None:
                 if base_rule is not None:
                     rig_type, source = base_rule.get("type"), "the rules table"
+                elif skirt_family(families_here[0]):
+                    # a skirt-named family the table *in use* does not name - see `SKIRT_FAMILY_PREFIXES`: the
+                    # shipped table names these, but a rules file on disk replaces that table wholesale, so this is
+                    # the path that reaches an install which already has one, and without it the family stays a
+                    # `basic.super_copy` stub and the skirt master finds no panel to drive
+                    rig_type, source = SKIRT_FAMILY_ANSWER["type"], "the skirt family list"
+                    carries = SKIRT_FAMILY_ANSWER
                 elif (unmatched or {}).get("type"):
                     # a family no table rule names, and the run has a fallback for those: his own rigs type them,
                     # and leaving them to MMR meant no control and no message at all (see the option's comment)
                     rig_type, source = unmatched["type"], "the fallback for families no rule names"
+                    carries = unmatched
                 else:
                     rig_type, source = None, "nothing names it"
+                    carries = None
             else:
                 rig_type = MODE_TYPES.get(mode)
                 # the trace names the rigify type, not this build's internal mode letter: it is read by people who
@@ -1439,12 +1536,13 @@ def resolve_rule_modes(model, rules, family_modes, table_modes, fixed, never, tr
                     # today - only `basic.super_copy` reads that key - but it is the same class of bug as the
                     # options dict the code review caught in chains-35 (handoff 9aq).
                     rule[key] = dict(base_rule[key]) if isinstance(base_rule[key], dict) else base_rule[key]
-        elif not mode and (unmatched or {}).get("type"):
-            # a family the fallback typed keeps the rest of the fallback's settings (a stricter `min_bones`,
-            # parameters of its own), because there is no table rule to inherit from
+        elif not mode and carries:
+            # a family typed by something other than the table - the `unmatched_families` fallback, or the skirt
+            # family answer - keeps that source's own settings (a stricter `min_bones`, parameters of its own, the
+            # `chain_deform` that makes a skirt a chain), because there is no table rule to inherit from
             for key in ("parent", "parameters", "chain_deform", "resample", "connect_chain", "min_bones"):
-                if key in unmatched:
-                    rule[key] = dict(unmatched[key]) if isinstance(unmatched[key], dict) else unmatched[key]
+                if key in carries:
+                    rule[key] = dict(carries[key]) if isinstance(carries[key], dict) else carries[key]
         if any(family.startswith(("Sp_He_", "Tp_He_", "Ear")) for family in families_here):
             rule.setdefault("parent", "Head")
         # Everything else the table does not name hangs off the nearest metarig bone to its model parent, the

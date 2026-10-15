@@ -109,15 +109,42 @@ MIN_BONES = 3
 MAX_BONES = 5
 #: Below this many vertices a projection onto the bone axis is noise rather than a cloth extent.
 MIN_VERTICES = 12
-SKIRT_PREFIX = "Sp_Hi_MSkirt"
+#: The plate-skirt families a real uma ships, one per way a model names a skirt panel. Until 2.33.9 this was
+#: `Sp_Hi_MSkirt` alone, so every model whose skirt is named differently was never measured at all - 20 of the 125
+#: models in the pool, the largest group being 9 with `Sp_Hi_CSkirt0`. The same four prefixes are in the rules table
+#: (as `spines.basic_tail` in the `Skirt` collection) and in `GROUP_PREFIXES`, because a panel has to be *rigged* as
+#: a skirt before reshaping it means anything; this list is the one the rules file cannot reach.
+SKIRT_PREFIXES = (
+    "Sp_Hi_MSkirt",
+    "Sp_Wa_MSkirt",
+    "Sp_Si_MSkirt",
+    "Sp_Hi_CSkirt",
+    "Sp_Hi_Hem",
+)
+#: Stems this must never treat as a panel however they are spelled. The `Tp_*`/`Pc_*` families of the same names are
+#: *roots* - one or two bones with no `_Handle` companions (`Tp_Hi_MSkirt0_FL_00`, `Tp_Hi_SkirtRoot0_FL_00`,
+#: `Pc_Wa_MSkirt1_FL_00`) - and subdividing one would invent a skirt where the model has an attachment point. A
+#: prefix list cannot exclude them on its own, so the word does it.
+NOT_A_PANEL = ("Root",)
+SKIRT_PREFIX = SKIRT_PREFIXES[0]   # kept: the trace message and older probes name this one
 HANDLE_SUFFIX = "_Handle"
 
 
 def panels(model):
-    """`{panel stem: [bone names, root first]}` for the model's own skirt families."""
+    """`{panel stem: [bone names, root first]}` for the model's own skirt families.
+
+    Two filters, and both matter. `SKIRT_PREFIXES` is the name half; `NOT_A_PANEL` is the shape half, because the
+    `Tp_*`/`Pc_*` families share the skirt *names* while being single root bones - measured on the pool, those are
+    `Tp_Hi_MSkirt0_FL_00`, `Tp_Hi_SkirtRoot0_FL_00` and `Pc_Wa_MSkirt1_FL_00`, one bone each and no `_Handle`
+    companions, against panels that are always two or more `_NN` bones with a `_Handle` apiece.
+    """
     found = {}
     for bone in model.data.bones:
-        if not bone.name.startswith(SKIRT_PREFIX) or bone.name.endswith(HANDLE_SUFFIX):
+        if bone.name.endswith(HANDLE_SUFFIX):
+            continue
+        if not any(bone.name.startswith(prefix) for prefix in SKIRT_PREFIXES):
+            continue
+        if any(word in bone.name for word in NOT_A_PANEL):
             continue
         found.setdefault(bone.name.rsplit("_", 1)[0], []).append(bone.name)
     return {stem: sorted(names) for stem, names in found.items()}
@@ -313,7 +340,7 @@ def reshape_skirt_panels(model, trace, spacing=SPACING_M, forced=None):
     found = panels(model)
     if not found:
         trace.info("skirt reshape: this model names no skirt family the reshape recognises - it looks for %s* "
-                   "(the `_Handle` bones aside) - nothing changed" % SKIRT_PREFIX)
+                   "(the `_Handle` bones aside) - nothing changed" % ", ".join(SKIRT_PREFIXES))
         return {"panels": 0, "reshaped": [], "skipped": {}, "writes": 0}
     geometry = {}
     for stem, chain in sorted(found.items()):
