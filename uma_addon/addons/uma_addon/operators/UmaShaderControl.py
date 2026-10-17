@@ -1520,7 +1520,7 @@ def _draw_local_block(layout, root, host, scene_props, manifest=None):
             _draw_override_row(layout, root, host, key, shader_id)
 
 
-def draw_shading_control(layout, context):
+def draw_shading_control(layout, context, switches=None):
     """The panel: which shader the scene uses, the mode line and its two buttons, then the values.
 
     The values are drawn **per shader**. With nothing selected, one box per shader a character in this scene is
@@ -1528,6 +1528,12 @@ def draw_shading_control(layout, context):
     scene with two shaders gets two independently editable looks rather than one table with rows that do nothing.
     With a character selected, only *her* shader, because a row she cannot use is worse than no row (the user's
     choice, and the reason `shader_of` exists).
+
+    `switches` is what the Shading panel draws directly under the chooser: the scene's own look switches (outlines,
+    driver control, face normals, the joke toggle). They are the *scene's*, so this module does not know them; the
+    panel passes a callable. Drawn here rather than after this function returns, because "under the selector" is
+    above the aim/hook buttons and above every value table - the user asked for exactly that. A probe that measures
+    this function's rows passes nothing and measures the rows it always has.
     """
     use_table(context)                      # the scene's shader: the chooser row and the mode line are about it
     sun = sun_object(context)
@@ -1547,6 +1553,10 @@ def draw_shading_control(layout, context):
         chooser.menu(ShaderControlMenu.bl_idname, text=MANIFEST.get("name") or TABLE_ID)
     for problem in MANIFEST_PROBLEMS:
         layout.label(text=problem, icon='ERROR')
+
+    # The scene's own switches, immediately under the shader they apply to and above everything that acts on it.
+    if switches is not None:
+        switches(layout)
 
     # Where the shader's shading *direction* comes from: the Uma Sun empty and nowhere else, so aiming it at the
     # scene's own key light is what saves aligning it by hand. The button only, since 2.31.0: "aim it on every Shading

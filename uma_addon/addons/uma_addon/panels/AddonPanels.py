@@ -345,6 +345,28 @@ class ControllerPanel(BasePanel, bpy.types.Panel):
         if CollapseRig is not None:
             layout.operator(CollapseRig.bl_idname, icon='ARMATURE_DATA')
 
+def _draw_shading_switches(layout, scene_props):
+    """The scene's look switches, drawn under the shader chooser rather than at the bottom of the panel.
+
+    They were the last rows of `ShadingLookPanel.draw` until 2.33.14, which put them under every value table of
+    every shader in the scene - the user: *"the toggles should also live right under the shader selector"*. They
+    are scene settings for the shading run, not per-shader values, so they stay plain rows rather than moving into
+    `UmaShaderControl`'s own block; the panel hands this function to that draw.
+    """
+    layout.prop(scene_props, "fix_outlines")
+    layout.prop(scene_props, "shader_control")
+    row = layout.row(align=True)
+    row.prop(scene_props, "face_normals")
+    if face_normals_module is not None:
+        row.operator(FaceNormalsApply.bl_idname, text="", icon='DRIVER')
+        # The copy is what decides face shading and it lives in a hidden collection, which was the user's
+        # complaint ("it's hard to access the static face copy... it should be easier to access, since it can be
+        # a source of many issues"). One click here, instead of hunting for a monitor icon in the Outliner.
+        row.operator(FaceNormalsReveal.bl_idname, text="", icon='HIDE_OFF')
+        row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
+    layout.prop(scene_props, "pregnancy_toggle") # DO NOT REMOVE
+
+
 @reg_order(3)
 class ShadingLookPanel(BasePanel, bpy.types.Panel):
     """One place to set the look of every uma in the scene, with per-character overrides.
@@ -363,19 +385,12 @@ class ShadingLookPanel(BasePanel, bpy.types.Panel):
         scene_props = context.scene.uma_scene
         layout.operator(ApplyShader.bl_idname, icon="SHADING_RENDERED")
         if draw_shading_control is None:
+            # Without the module there is no chooser and no value table, but the switches are still this panel's:
+            # draw them rather than returning past them (that early `return` was the user's own edit and it cost the
+            # three rows below it whenever the file was missing).
             layout.label(text="UmaShaderControl.py is missing", icon='ERROR')
+            _draw_shading_switches(layout, scene_props)
             return
-        draw_shading_control(layout, context)
-        layout.prop(scene_props, "fix_outlines")
-        layout.prop(scene_props, "shader_control")
-        row = layout.row(align=True)
-        row.prop(scene_props, "face_normals")
-        if face_normals_module is not None:
-            row.operator(FaceNormalsApply.bl_idname, text="", icon='DRIVER')
-            # The copy is what decides face shading and it lives in a hidden collection, which was the user's
-            # complaint ("it's hard to access the static face copy... it should be easier to access, since it can be
-            # a source of many issues"). One click here, instead of hunting for a monitor icon in the Outliner.
-            row.operator(FaceNormalsReveal.bl_idname, text="", icon='HIDE_OFF')
-            row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
-        layout.prop(scene_props, "pregnancy_toggle") # DO NOT REMOVE
+        # The switches go *inside* that draw, directly under the shader chooser - see its `switches` argument.
+        draw_shading_control(layout, context, switches=lambda lay: _draw_shading_switches(lay, scene_props))
     
