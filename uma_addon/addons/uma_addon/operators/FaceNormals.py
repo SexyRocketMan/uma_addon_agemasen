@@ -84,8 +84,26 @@ FACE_GROUP_NAME = "UMA_Face"
 FACE_SUFFIX = "_face"
 SPLIT_MARKER = "uma_face_normals_split"
 
-#: Material name fragments that mean "this is the face" - the same vocabulary `Shading` uses to pick materials.
+#:  Material name fragments that mean "this is the face" - the same vocabulary `Shading` uses to pick materials.
 FACE_HINTS = ("face", "mayu")
+
+#: **The eyes travel with the face** (2.33.13). They are their own material (`..._eye`) and their own geometry, sitting
+#: on the body, and every blink morph moves the *lid* (a `face` polygon) and the *eyeball* (an `eye` one) - so
+#: separating only the face material cut those morphs in two, leaving the same key on both objects with half the
+#: geometry on each. Measured over six models with the pieces' own polygons: 18-42 keys straddled the split, every one
+#: of them an `Eye_*` blink (`Eye_CloseA/B/C`, `Eye_HalfA/B/C`, `Eye_EyeHideA/B`, `Eye_DereA/B`); with the eye material
+#: included, **0** straddle on all six.
+#:
+#: The hint is `"eye"` alone because that is the shader's own rule - `{"id": "eye", "match": ["eye"], "material":
+#: "eye"}` in the shader manifest - so a material is an eye to the separation and to the shading, or to neither.
+#: Inventing a wider list here (`瞳`, `iris`, `pupil`) would separate materials the shader would still shade as the
+#: default, which is the one combination nobody wants.
+EYE_HINTS = ("eye",)
+
+#: The mouth/lip geometries that the same argument applies to, kept out on purpose: a mouth morph moves lip polygons
+#: (`Mouth`), which are already `face`-material polygons on every model measured, so there is nothing to add here. If a
+#: model turns up whose lips are their own material and whose mouth morphs straddle, this is where it would go.
+MOUTH_HINTS = ()
 
 #: Bones that can be the head, in order. Measured on a real skeleton: the bone is `Head` (a child of `Neck`), with
 #: `Head_attach`, `Head_height`, `Head_shade_start` and `Head_Handle` as decoys that also match "head".
@@ -98,6 +116,19 @@ def is_face_material(material):
         return False
     name = material.name.lower()
     return any(hint in name for hint in FACE_HINTS)
+
+
+def is_face_piece_material(material):
+    """Is this material part of the object the face becomes - the face **and the eyes** (2.33.13)?
+
+    Used by the separation and by the vertex group that stands in for it when the separation is off or fails; *not*
+    by `face_polygon_count`, which decides whether an object is a face target and keeps its old, narrower meaning.
+    """
+    if material is None:
+        return False
+    name = material.name.lower()
+    return (any(hint in name for hint in FACE_HINTS) or any(hint in name for hint in EYE_HINTS)
+            or any(hint in name for hint in MOUTH_HINTS))
 
 
 def armature_of(obj):
@@ -146,14 +177,17 @@ def face_group_for(mesh_obj, key=FACE_GROUP_NAME):
 
 
 def face_vertices(mesh_obj):
-    """The vertices of the polygons that *use* a face material, or an empty set.
+    """The vertices of the polygons that *use* a face-piece material (the face and the eyes), or an empty set.
 
     By polygon, not by material slot, and that is not a detail: separating copies **every** material slot onto both
     pieces, so a slot-based test says the body is still full of face materials after its face polygons have left.
     That is how a separated body would keep getting its own (pointless) transfer with an empty vertex group.
+
+    Widened to the eyes in 2.33.13, together with the separation itself: a blink moves lid *and* eyeball, so the
+    group has to cover both or the fallback path keeps half a morph on the body.
     """
     indices = {index for index, slot in enumerate(mesh_obj.material_slots)
-               if is_face_material(slot.material)}
+               if is_face_piece_material(slot.material)}
     if not indices:
         return set()
     vertices = set()
@@ -231,8 +265,10 @@ def split_face_into_object(context, mesh_obj, trace=None):
             bpy.ops.object.mode_set(mode='EDIT')
             bpy.ops.mesh.select_all(action='DESELECT')
             bpy.ops.object.mode_set(mode='OBJECT')
+            # the piece is the face **and the eyes**: separating the face alone left every blink morph straddling the
+            # two objects, because a lid is a `face` polygon and its eyeball is an `eye` one (see `EYE_HINTS`)
             indices = {index for index, slot in enumerate(mesh_obj.material_slots)
-                       if is_face_material(slot.material)}
+                       if is_face_piece_material(slot.material)}
             for polygon in mesh_obj.data.polygons:
                 polygon.select = polygon.material_index in indices
             bpy.ops.object.mode_set(mode='EDIT')
@@ -648,7 +684,15 @@ def faces_in(context, objects=None):
         elif polygons and face_polygons == polygons:
             found.append((obj, "every polygon of it uses a face material"))
         elif face_polygons:
-            found.append((obj, "%d of its %d polygon(s) use a face material" % (face_polygons, polygons)))
+            # the count is the face material's alone (this decides whether the object *is* a face target, and that
+            # meaning has not changed); say how much the *piece* will take, eyes included, because that is what the
+            # run then reports and the two numbers differ by the eye material - measured 1946 against 1994 on the
+            # reference model, and a reader comparing them would otherwise think something was lost
+            piece_polygons = sum(1 for polygon in obj.data.polygons
+                                 if polygon.material_index < len(obj.material_slots)
+                                 and is_face_piece_material(obj.material_slots[polygon.material_index].material))
+            found.append((obj, "%d of its %d polygon(s) use a face material, %d with the eyes"
+                          % (face_polygons, polygons, piece_polygons)))
     return found
 
 
