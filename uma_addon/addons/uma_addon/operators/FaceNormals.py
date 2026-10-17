@@ -69,7 +69,7 @@ except ImportError:  # pragma: no cover - only when that file is deleted
 from bpy.types import Operator
 
 #: The tag reported by the operators and printed when the step runs, so a report can be told from a stale build.
-TAG = "face-normals-2"
+TAG = "face-normals-3"
 
 #: Names the copy and the modifier get, and the custom property that marks the copy as ours.
 COPY_SUFFIX = "_normals_static"
@@ -411,6 +411,12 @@ def prune_split_morphs(body, piece, trace=None):
     * the **body** drops every key that cannot move it **and** can still move the face - so a key that moves nothing
       anywhere stays on the body once, and no name disappears from the model.
 
+    The keys in the second half of that second bullet - inert on both pieces - are named in the trace, because they are
+    the ones a user finds later and asks about: *"it seems some morphs are still on the body mesh - `Eye_Pupil*`,
+    `Eye_LidHide*` - ... they don't make any visible changes after the face is separated."* They are empty in the model
+    file (see `face_key_ownership_check.py`), so no build of this step can give them an effect; the trace line says so
+    with the names, and the count is in the report as `keys_dead_on_both_pieces_left_on_the_body`.
+
     Measured on a 12,450-vertex model: the face drops 36 keys and the body 114, leaving 157 + 79 = 236 entries
     where a naive split would list 386, with the same 193 names present as before. This step is **82% of a `Shading`
     run** (3.8s of 4.6s on the reference model), so its two halves are timed apart: deciding which keys are dead
@@ -432,11 +438,24 @@ def prune_split_morphs(body, piece, trace=None):
     else:
         removed_face = remove_shape_keys(piece, dead_face, trace)
         removed_body = remove_shape_keys(body, dead_body - dead_face, trace)
+
+    # The keys neither object can move. They are the model's own empty morphs - it is the model file that has to answer
+    # for them, not the split - and they are left on the body so the model keeps its morph list. Named here because
+    # "there are morphs on the body that do nothing" is a report this step will otherwise always have to answer with a
+    # probe: measured on the reference, the upstream reference, Maruzensky, `1001_30`, `1014_00` and `1130_00`, every
+    # one of them was already inert on a pristine import, with `clean_model` on and off (4-9 names per model: the
+    # `Eye_Pupil*` and `Eye_LidHideB` families, plus `Brow_Offset_L_L` on `1014_00`).
+    both = sorted(dead_body & dead_face)
+    if both and trace is not None:
+        trace.info("%d morph name(s) move no vertex of either piece and stay on %r: %s%s. They move no vertex in "
+                   "the model file either, so the split cannot have taken their effect away"
+                   % (len(both), body.name, ", ".join(both[:6]), ", ..." if len(both) > 6 else ""))
     return {"face_keys_removed": removed_face, "face_keys_left": len(piece.data.shape_keys.key_blocks)
             if piece.data.shape_keys else 0,
             "body_keys_removed": removed_body, "body_keys_left": len(body.data.shape_keys.key_blocks)
             if body.data.shape_keys else 0,
-            "keys_dead_on_both_pieces_left_on_the_body": len(dead_body & dead_face)}
+            "keys_dead_on_both_pieces_left_on_the_body": len(both),
+            "keys_dead_on_both_names": both}
 
 
 def find_copy(face_obj):
@@ -758,6 +777,17 @@ def apply_face_normals(context, objects=None, trace=None):
             if piece is None:
                 report["notes"].append("%s: %s" % (face_obj.name, note))
             else:
+                # The names neither piece can move, said out loud where a shading run reports: they are left on the
+                # body so the model keeps its morph list, and they are empty in the model file itself, so the user
+                # finding them later ("those don't make any visible changes") gets the answer from the run rather
+                # than from a probe. `Shading` prints every note as `[uma_addon] <tag>: ...`.
+                dead = (note or {}).get("keys_dead_on_both_names") or []
+                if dead:
+                    report["notes"].append(
+                        "%d morph name(s) move no vertex of %r or of %r and stay on the body: %s%s. They move no "
+                        "vertex in the model file either, so separating the face cannot have taken an effect away "
+                        "from them" % (len(dead), piece.name, piece.get("uma_face_normals_split_of") or face_obj.name,
+                                       ", ".join(dead[:6]), ", ..." if len(dead) > 6 else ""))
                 face_obj = piece
                 entry["object"] = piece.name
         armature = armature_of(face_obj)
