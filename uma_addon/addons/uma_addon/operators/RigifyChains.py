@@ -115,8 +115,23 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 RIG_VERSION = "v8"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-78"
+BUILD_TAG = "chains-79"
 BUILD = BUILD_TAG + (
+    ": 2.33.11 - the skirt master hangs off the trunk, so it follows the body (rig version stays v8). The user: "
+    "*\"the skirt master is not parented to anything right now - it stays in place when you move the body. I'd say it "
+    "should be a child of `torso`\"*. It was created as a parentless root, which was invisible in every gate because "
+    "nothing tested it: the two constraints that read it use `LOCAL` spaces and only its *rotation*, so a master "
+    "that never moves works exactly as well for them - and fails the hand that has to find it. This is the skirt "
+    "study's §7 item 2 arriving as a bug report, and the answer is the one the user's own rigs use: "
+    "`SKIRT_MASTER_PARENTS = (\"torso\", \"hips\", \"torso_root\")`, first one this rig has (the reference model's "
+    "rig is `root` -> `torso_root` -> `torso` -> `hips`/`chest`, and `torso` is what the user asked for). "
+    "`use_connect` stays off - a connected bone's head is locked to its parent's tail, and this one hangs at the "
+    "ring's centre - and parenting changes no geometry, so the master's own frame, `_skirt_flare_angles`, the lift's "
+    "window and every panel copy are untouched. Measured: posing `torso` 20 deg now moves the master **0.01838 m** "
+    "(it was 0.00000), and every skirt number is unchanged - 10 of 10 panels still move, per-joint turns still "
+    "26.63-30.0 deg, 10 of 10 outward and rising, worst neighbour excess still 0.0 deg. `skirt_master_check.py` "
+    "grew two checks for it (the parent, and that posing the trunk actually moves it - the parent is the mechanism, "
+    "the motion is the claim), 23 -> 25. Before that: "
     ": 2.33.10 - the rules file in use is brought up to date with this build's table, on a run (rig version stays "
     "v8). The user, after 2.33.9: *\"we should be able to control the default rules between versions 100% - they are "
     "not for the user to change. Should we overwrite/create the default ruleset on install?\"* The problem was real: "
@@ -3707,6 +3722,10 @@ class RigifyChains(bpy.types.Operator):
     SKIRT_LIFT_DEGREES = 20.0
     SKIRT_LIFT_UP_M = 0.05
     SKIRT_LIFT_DOWN_M = 0.005
+    #: What the master hangs off, in order of preference - the user's answer (*"it should be a child of `torso`"*)
+    #: and then the trunk controls a differently-built spine rig might have instead. The master is a *control*, so
+    #: it never contributes deformation itself; this only decides what it follows when the body moves.
+    SKIRT_MASTER_PARENTS = ("torso", "hips", "torso_root")
 
     def _skirt_master_forward(self, model):
         """Which way the character faces, in armature space - the direction the master's own length points.
@@ -3865,6 +3884,28 @@ class RigifyChains(bpy.types.Operator):
             centre /= float(len(panels))
             master_bone.head = centre
             master_bone.tail = centre - forward * self.SKIRT_MASTER_LENGTH
+            # **Hang it off the trunk** (2.33.11, the user: *"the skirt master is not parented to anything right now -
+            # it stays in place when you move the body. I'd say it should be a child of `torso`"*). It was created as
+            # a parentless root, so it stayed where it was while the body moved: fine for the two constraints, which
+            # read it in `LOCAL` spaces and only ever use its *rotation*, but wrong for the hand that has to find it.
+            # Parenting changes no geometry - `edit_bone.parent` only adds the transform chain, and head/tail above
+            # are in armature space - so the master's own frame, and therefore `_skirt_flare_angles`, the lift's
+            # window and every panel copy, are untouched. `use_connect` stays off: a connected bone's head is locked
+            # to its parent's tail, and this one hangs at the ring's centre, not on `torso`'s tail.
+            #
+            # `torso` is what the user asked for and it is the trunk control rigify's spine rig makes (`root` ->
+            # `torso_root` -> `torso` -> `hips`/`chest` on the reference model). The fallbacks are there because the
+            # rig is MMR's metarig passed through rigify: a model with a different spine setup may name the trunk
+            # something else, and a master that is parentless is still better than a run that fails.
+            for parent_name in self.SKIRT_MASTER_PARENTS:
+                parent = edit.get(parent_name)
+                if parent is not None:
+                    master_bone.parent = parent
+                    master_bone.use_connect = False
+                    break
+            else:
+                trace.info("skirt master: none of %s is in this rig, so %s stays a root bone and will not follow "
+                           "the body" % (", ".join(self.SKIRT_MASTER_PARENTS), self.SKIRT_MASTER_NAME))
             bpy.ops.object.mode_set(mode='OBJECT')
             # Show it with the panels rather than in whatever collection happens to be active.
             try:
