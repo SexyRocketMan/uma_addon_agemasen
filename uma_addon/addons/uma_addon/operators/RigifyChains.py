@@ -115,9 +115,16 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 RIG_VERSION = "v8"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-81"
+BUILD_TAG = "chains-82"
 BUILD = BUILD_TAG + (
-    ": 2.33.13 - the eyes are separated with the face, so no morph straddles the two objects (rig version stays v8). "
+    ": 2.33.13 - the shading panel puts the shader rows first, and the pregnancy toggle keeps its joke (rig version "
+    "stays v8). Both are the user's own edits, shipped with this patch: `draw_shading_control` moved above "
+    "`fix_outlines`, `shader_control` and the face-normal buttons, so the per-material shader rows are reachable "
+    "without scrolling past them; and the toggle is labelled `Pregnancy toggle` and carries its original tooltip. The "
+    "missing-module guard moved up with it, so its `return` now precedes those rows rather than following them - "
+    "`UmaShaderControl.py` ships with the add-on and a panel test draws this state. Then the entry this build "
+    "carries forward: 2.33.13 - the eyes are separated with the face, so no morph straddles the two objects (rig "
+    "version stays v8). "
     "The user: *\"the face is separated as an object and the static copy for data transfer is created based on that "
     "face object - but the eyes remain a part of the body mesh. This means that the eye morphs are split between the "
     "two - some remain in the body mesh (pupil controlling ones), and others are on the face object now. Is there a "

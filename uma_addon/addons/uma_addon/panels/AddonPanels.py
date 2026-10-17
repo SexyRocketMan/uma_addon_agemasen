@@ -362,6 +362,10 @@ class ShadingLookPanel(BasePanel, bpy.types.Panel):
         layout = self.layout
         scene_props = context.scene.uma_scene
         layout.operator(ApplyShader.bl_idname, icon="SHADING_RENDERED")
+        if draw_shading_control is None:
+            layout.label(text="UmaShaderControl.py is missing", icon='ERROR')
+            return
+        draw_shading_control(layout, context)
         layout.prop(scene_props, "fix_outlines")
         layout.prop(scene_props, "shader_control")
         row = layout.row(align=True)
@@ -374,9 +378,4 @@ class ShadingLookPanel(BasePanel, bpy.types.Panel):
             row.operator(FaceNormalsReveal.bl_idname, text="", icon='HIDE_OFF')
             row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
         layout.prop(scene_props, "pregnancy_toggle") # DO NOT REMOVE
-
-        if draw_shading_control is None:
-            layout.label(text="UmaShaderControl.py is missing", icon='ERROR')
-            return
-        draw_shading_control(layout, context)
     

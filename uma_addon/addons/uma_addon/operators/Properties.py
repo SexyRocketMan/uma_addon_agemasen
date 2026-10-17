@@ -406,10 +406,9 @@ class UmaScene(bpy.types.PropertyGroup):
                     "and drops the morphs that cannot move each piece")
 
     pregnancy_toggle: BoolProperty(
-        name="Pregnancy Toggle",
+        name="Pregnancy toggle",
         default=False,
-        description="Does nothing at all. A community joke, added because it was asked for - it is not wired to the "
-                    "rig, the shading or anything else, and nothing reads it")
+        description="You might have to write a resignation letter, but it's a small price for the joys of fatherhood.")
 
     # Which shading groups the panel has folded away, as a bitmask over the groups in the settings table, one for
     # the global settings and one for the selected character's overrides. Here rather than on the objects
