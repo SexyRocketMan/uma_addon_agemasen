@@ -16,10 +16,10 @@ try:
 except ImportError:
     draw_shading_control = None
 try:
-    from ..operators.FaceNormals import FaceNormalsApply, FaceNormalsRemove
+    from ..operators.FaceNormals import FaceNormalsApply, FaceNormalsReveal, FaceNormalsRemove
     face_normals_module = True
 except ImportError:
-    FaceNormalsApply = FaceNormalsRemove = None
+    FaceNormalsApply = FaceNormalsRemove = FaceNormalsReveal = None
     face_normals_module = None
 from ..operators.Umashader import *
 from ..operators.EarConvert import *
@@ -368,6 +368,10 @@ class ShadingLookPanel(BasePanel, bpy.types.Panel):
         row.prop(scene_props, "face_normals")
         if face_normals_module is not None:
             row.operator(FaceNormalsApply.bl_idname, text="", icon='DRIVER')
+            # The copy is what decides face shading and it lives in a hidden collection, which was the user's
+            # complaint ("it's hard to access the static face copy... it should be easier to access, since it can be
+            # a source of many issues"). One click here, instead of hunting for a monitor icon in the Outliner.
+            row.operator(FaceNormalsReveal.bl_idname, text="", icon='HIDE_OFF')
             row.operator(FaceNormalsRemove.bl_idname, text="", icon='TRASH')
         layout.prop(scene_props, "pregnancy_toggle") # DO NOT REMOVE
 

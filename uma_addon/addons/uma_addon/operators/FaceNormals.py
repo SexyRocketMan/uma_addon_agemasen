@@ -9,8 +9,11 @@ normals** onto the real face every evaluation.
 The recipe is the user's own, from their manual setup, and is implemented as described rather than reinvented:
 
 1. a **copy of the face object** in the scene;
-2. it **copies the rotation of the head bone** through a `COPY_ROTATION` constraint, so it turns with the head -
-   which is what makes the transferred normals keep facing the right way when the character looks around;
+2. it **follows the head bone**, so it turns with the head - which is what makes the transferred normals keep facing
+   the right way when the character looks around. Since 2.33.12 that is a **bone parent** rather than the
+   `COPY_ROTATION` constraint the recipe called for: a constraint on an object turns it about that object's own
+   origin (the model's feet) and its `LOCAL` spaces read the bone's axes into the object's, so the copy swung around
+   the body and turned about the wrong axes. `follow_head` has the reasoning and the measurements;
 3. a **Data Transfer modifier** on the real face, `CUSTOM_NORMAL` as loop data, mapping **`TOPOLOGY`** (corner for
    corner, which is exact here because the copy is the same mesh);
 4. the copy is **hidden**, and the modifier is left **live** rather than applied.
@@ -432,6 +435,49 @@ def copy_collection(face_obj):
     return collection
 
 
+def follow_head(copy, armature, head):
+    """Make the static copy follow the head bone **rigidly**. Returns a short note for the trace.
+
+    Three properties are needed, and the constraint this replaces got one right and two wrong:
+
+    * **the pivot is the head bone's head**, not the object's origin. A `COPY_ROTATION` on an *object* turns it about
+      that object's own origin, and the copy's origin sits wherever the face object's does - the model's feet - so
+      turning the head swept the copy around the whole body. The user: *"it doesn't rotate in place, but rather on a
+      huge sphere"*.
+    * **the frame is the bone's own**, so the copy turns the way the head turns. `COPY_ROTATION` with `LOCAL` on both
+      sides was picked because it is the only setting that is identity at rest (0.00 deg, measured by
+      `face_normals_rest_check.py`, and that identity is what keeps the transferred normals the face's own). But
+      `LOCAL` reads the *bone's* axes and writes them into the *object's* axes: same angle, wrong axes. The user:
+      *"even with the pivot point fixed, the rotation is not matching"*.
+    * **identity at rest**, which is the property the whole feature exists for.
+
+    A bone parent gives all three, because it inherits the bone's transform *as a transform* instead of replacing an
+    orientation - and it needs no constraint at all, so there is no space left to get wrong.
+
+    **The order of the last two lines is the whole trick**, and this is what `face_normals_rest_check.py` variant 5
+    got wrong: assigning `matrix_world` and *then* overwriting `matrix_parent_inverse` moves the copy somewhere else,
+    which is why that variant measured the same 72.74 deg as the world-space constraints and why bone parenting was
+    written off. Parent fields, then the inverse, then the world matrix.
+    """
+    # a copy made by an older build still carries the constraint this replaces - remove it either way, so a re-run
+    # upgrades the copy in place instead of stacking a parent on top of a constraint
+    for constraint in list(copy.constraints):
+        if constraint.type == 'COPY_ROTATION':
+            copy.constraints.remove(constraint)
+    if armature is None or head is None:
+        copy.parent = None
+        return "no head bone in this rig, so it does not follow one"
+    world = copy.matrix_world.copy()
+    # `pose.bones[...].matrix` is only as fresh as the last evaluation
+    bpy.context.view_layer.update()
+    copy.parent = armature
+    copy.parent_type = 'BONE'
+    copy.parent_bone = head.name
+    copy.matrix_parent_inverse = (armature.matrix_world @ armature.pose.bones[head.name].matrix).inverted()
+    copy.matrix_world = world
+    return "bone-parented to the head bone %s" % head.name
+
+
 def make_copy(context, face_obj, armature, head, trace=None):
     """The static copy: same mesh, no shape keys, not skinned, turning with the head, hidden."""
     copy = face_obj.copy()
@@ -461,31 +507,27 @@ def make_copy(context, face_obj, armature, head, trace=None):
     for modifier in list(copy.modifiers):
         copy.modifiers.remove(modifier)
 
-    constraint = copy.constraints.new('COPY_ROTATION')
-    constraint.name = "UMA face normals: follow the head"
-    constraint.target = armature
-    if head is not None:
-        constraint.subtarget = head.name
-    constraint.mix_mode = 'REPLACE'
-    constraint.influence = 1.0
-    # **LOCAL on both sides**, and this is the whole of a reported bug. With the defaults (world space) the
-    # constraint *replaces* the copy's rotation with the head bone's world rotation, which at rest is the bone's own
-    # orientation - measured 94.157 degrees away from the face's - so every transferred normal came back rotated:
-    # mean normal change at rest (no morphs) **72.74 degrees**, which is the user's *"it shifts the boundary between
-    # the diffuse/shaded regions, and adds a bright region on the side of the face"*. Measured over five ways of
-    # following the head (`face_normals_rest_check.py`), LOCAL/LOCAL is the only one that is identity at rest
-    # (**0.00 degrees**): the copy inherits the head's *motion* rather than its *orientation*, which is what
-    # "copies the rotation of the head bone so it reacts to directions properly" means. `use_offset`, ADD and bone
-    # parenting were all measured too and none of them help (72.74, 72.74 and 72.74 degrees).
-    constraint.owner_space = 'LOCAL'
-    constraint.target_space = 'LOCAL'
+    # **It follows the head by being bone-parented, not by a constraint** (2.33.12). This is where a
+    # `COPY_ROTATION` used to be made, in `LOCAL` spaces on both sides: chosen because that was the only setting that
+    # was identity at rest (0.00 deg, measured by `face_normals_rest_check.py`, against 72.74 deg for the world-space
+    # variants), and that identity is what keeps the transferred normals the face's own. Two things it cost, both
+    # reported by the user afterwards: the pivot was the *object's* origin - the model's feet - so the copy swept
+    # around the body instead of turning in place, and `LOCAL` reads the bone's axes into the object's axes, so the
+    # rotation came out about the wrong ones. `follow_head` above has the reasoning and the fix.
+    follow = follow_head(copy, armature, head)
 
     # Hidden in the **collection**, not on the object, and this is the second reported bug: neither the object's
     # eye (`hide_set`, a per-view-layer hide that overrides the eye) nor `hide_viewport` (the Outliner's *monitor*
     # icon) is the flag a user reaches for first, and setting either one leaves "I couldn't get it to appear even
     # after enabling viewport visibility" true. The copy goes into its own collection whose viewport and render
-    # flags are off, so it is out of the way by default and **one click in the Outliner** - on a collection named
-    # for what it is - brings it back.
+    # flags are off, so it is out of the way by default.
+    #
+    # But finding it again was *also* hard - the user, 2.33.12: *"it's hard to access the static face copy due to how
+    # it's hidden - you can't just unhide it using the ui viewport/render visibility... it should be easier to
+    # access, since it can be a source of many issues"*. A disabled collection is a monitor-icon in one specific
+    # Outliner row, in whatever collection the model happens to live under, so `FaceNormalsReveal` now does it from
+    # the Shading panel: one click enables the collection, selects the object and shows it. The default stays hidden
+    # - it is a copy nobody wants to see while posing - but it is no longer *lost*.
     collection = copy_collection(face_obj)
     for other in list(copy.users_collection):
         if other is not collection:
@@ -496,8 +538,8 @@ def make_copy(context, face_obj, armature, head, trace=None):
         # keep it in the same place as the object it copies, without inheriting what makes that object move
         copy.matrix_world = face_obj.matrix_world
     if trace is not None:
-        trace.info("static copy %r: no shape keys, no armature modifier, Copy Rotation from %s.%s, hidden"
-                   % (copy.name, armature.name if armature else "?", head.name if head else "?"))
+        trace.info("static copy %r: no shape keys, no armature modifier, %s, hidden (FaceNormalsReveal shows it)"
+                   % (copy.name, follow))
     return copy
 
 
@@ -708,6 +750,9 @@ def apply_face_normals(context, objects=None, trace=None):
                         trace.info("refreshed the static copy of %r: %s" % (face_obj.name, mismatch))
                 else:
                     entry["copy"] = "reused"
+                # ...and how it follows the head is re-applied every run, because a copy made by an older build
+                # follows it through a constraint 2.33.12 replaced. This also repairs a copy whose parent was lost.
+                follow_head(copy, armature, head)
         with phase("the face step: the transfer modifier"):
             modifier = make_modifier(face_obj, copy, group, context)
         entry["modifier"] = modifier.name
@@ -757,6 +802,65 @@ class FaceNormalsApply(Operator):
             for entry in done)))
         for note in report["notes"]:
             print("[uma_addon] %s: %s" % (TAG, note))
+        return {'FINISHED'}
+
+
+def layer_collection(context, name):
+    """The view layer's own entry for a collection, which is where `exclude`/`hide_viewport` actually live.
+
+    `collection.hide_viewport` is the *data* flag (the monitor icon); a collection can also be excluded from a view
+    layer, and a collection that is excluded has no eye to click at all. Both have to be cleared for the collection's
+    contents to appear, and a user hunting for the copy hits whichever one is in the way.
+    """
+    def walk(layer):
+        if layer.collection.name == name:
+            return layer
+        for child in layer.children:
+            found = walk(child)
+            if found is not None:
+                return found
+        return None
+    return walk(context.view_layer.layer_collection)
+
+
+class FaceNormalsReveal(Operator):
+    """Show, select and frame the static face copy - the thing that decides face shading and is easy to lose"""
+    bl_idname = "uma.face_normals_reveal"
+    bl_label = "Find the static face copy"
+    bl_description = ("Reveal the static face copy: enable the collection it is hidden in, select it, and show it in "
+                      "the viewport. Run it again to hide it back the way it was. The copy is what the transfer reads "
+                      "its normals from, so it is the first thing to look at when face shading is wrong")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        copies = [obj for obj in bpy.data.objects if obj.get(COPY_MARKER)]
+        if not copies:
+            self.report({'WARNING'}, "%s: there is no static copy in this file - set the transfer up first" % TAG)
+            return {'CANCELLED'}
+        collection = bpy.data.collections.get(COPY_COLLECTION_NAME)
+        # the collection's own state is the toggle: showing it again is a second click on the same button
+        hidden = collection is not None and collection.hide_viewport
+        if collection is not None:
+            collection.hide_viewport = not hidden
+            layer = layer_collection(context, collection.name)
+            if layer is not None:
+                layer.exclude = False
+                layer.hide_viewport = False
+        if hidden:
+            for obj in copies:
+                obj.hide_set(False)
+                obj.hide_viewport = False
+                obj.hide_render = True
+            for obj in context.scene.objects:
+                obj.select_set(False)
+            copies[0].select_set(True)
+            context.view_layer.objects.active = copies[0]
+            self.report({'INFO'}, "%s: showing %s (%d cop%s) - press it again to hide it"
+                        % (TAG, copies[0].name, len(copies), "y" if len(copies) == 1 else "ies"))
+        else:
+            for obj in copies:
+                obj.select_set(False)
+            self.report({'INFO'}, "%s: hid %d cop%s again" % (TAG, len(copies), "y" if len(copies) == 1 else "ies"))
         return {'FINISHED'}
 
 
