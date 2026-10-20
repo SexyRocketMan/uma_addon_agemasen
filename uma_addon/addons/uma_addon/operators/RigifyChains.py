@@ -82,6 +82,9 @@ GENERATED_PREFIXES = ("ORG-", "DEF-", "MCH-")
 PER_BONE_RIG_TYPES = {"basic.super_copy", "basic.raw_copy"}
 # the collection the model's own bones are gathered into after a run, so they can be switched off as a set
 MODEL_COLLECTION_NAME = "MMD"
+# The model bones a hand's *surface* is weighted to, in the naming the uma rips use. Only needed to say which of them
+# a model deforms nothing with - a hand inside a sleeve has all of these and weights none of them.
+HAND_GROUP_PREFIXES = ("Wrist", "Hand_Attach", "Index_", "Middle_", "Ring_", "Pinky_", "Thumb_")
 # where the model's own bones are made to follow the new chains
 FOLLOW_CONSTRAINT_NAME = "UMA_chain_follow"
 ROTATE_CONSTRAINT_NAME = "UMA_chain_rotate"
@@ -115,9 +118,24 @@ TRACE_TEXT_NAME = "uma_rigify_chains_trace.txt"
 RIG_VERSION = "v8"
 RIG_TAG = "Pumpkin Rig " + RIG_VERSION   # what a user sees in a message or a panel label
 
-BUILD_TAG = "chains-84"
+BUILD_TAG = "chains-85"
 BUILD = BUILD_TAG + (
-    ": 2.33.15 - the morphs that move neither piece are named in the trace (rig version stays v8). The user, seeing "
+    ": 2.33.16 - the run says when a model's hand bones deform nothing (rig version stays v8). The user: *\"a "
+    "generated rig doesn't control the hands properly - the hand controllers don't move the arms the way you'd expect "
+    "them to. The model is an outlier - Agnes Digital with a costume that has very long sleeves that hide the hands - "
+    "might that be the issue? Perhaps there's a different bone structure?\"* The bone structure is the same (same "
+    "names, same parents: `Elbow_L` -> `Wrist_L` -> fingers, and `Sp_El_Sleeve0_L_00` under `Elbow_L`); the weights "
+    "are not. Agnes Digital and Agnes Tachyon have **zero** vertices on `Wrist_L`, on `Hand_Attach_L` and on all ten "
+    "finger bones, against 164 and 842 on the reference, and 2468 / 1245 vertices on `Sp_El_Sleeve0_*` instead - the "
+    "hand is inside the sleeve and the sleeve chain is what a hand-shaped region is skinned to. Measured with "
+    "`arm_control_check.py`: a 10 cm `hand_ik` pull moves the hand bone 0.0996 / 0.1000 m and bends the elbow 15.7 / "
+    "14.2 deg (reference 14.3), so the IK arm is fine; rotating it 30 degrees moves **0.0000 m of geometry**, against "
+    "0.0338 m on the reference, because it turns a bone that owns no vertex. Nothing to fix - the model's own "
+    "hierarchy parents its sleeve to the elbow, so no rig that leaves that hierarchy alone can turn a cuff with a "
+    "wrist - so `_report_unweighted_hands` says it instead: one trace line naming the bones that own no vertex and "
+    "what covers the hand, on models where no wrist or finger bone owns one, silent on every other model measured "
+    "(reference, `1001_30`, `1014_00`, `1130_00`). Then the entry this build carries forward: 2.33.15 - the morphs "
+    "that move neither piece are named by the run (rig version stays v8). The user, seeing "
     "them in the shape-key list: *\"it seems some morphs are still on the body mesh - `Eye_Pupil*`, `Eye_LidHide*` - "
     "could you look into that? I'm not sure if those ever had any effect, but they don't make any visible changes "
     "after the face is separated.\"* Measured rather than argued: `face_key_ownership_check.py` imports six model "
@@ -4874,6 +4892,56 @@ class RigifyChains(bpy.types.Operator):
         return ";".join("%s=%s" % (item.family, item.mode) for item in self.Families if not item.fixed)
 
     @staticmethod
+    def _report_unweighted_hands(model, trace):
+        """Say when a model's hand surface is not skinned to its hand bones at all.
+
+        Silent on an ordinary model: the reference has 164 vertices on `Wrist_L` and 842 across the fingers, and so do
+        the rest of the pool measured. It fires for the two models a tester sent as outliers - **Agnes Digital and
+        Agnes Tachyon**, whose hands are inside sleeves: every `Wrist_*` and every finger bone owns **zero** vertices
+        there, and the hand region is skinned to `Sp_El_Sleeve0_*`. Rotating a hand control on such a model turns
+        nothing visible, which is what "the hand controls don't move the arms the way you'd expect" turns out to mean.
+
+        "Owns a vertex" is counted, not inferred from a name, and the `*_Handle`, `*_Pole` and `*_Target` bones are
+        skipped: they are MMD's own helpers, they own nothing on a normal model either, and counting them made the
+        first version of this note fire on every model.
+        """
+        mesh = next((obj for obj in bpy.context.scene.objects
+                     if obj.type == 'MESH' and any(modifier.type == 'ARMATURE' and modifier.object is model
+                                                   for modifier in obj.modifiers)), None)
+        if mesh is None or not mesh.vertex_groups:
+            return
+        surface = [group for group in mesh.vertex_groups
+                   if group.name.startswith(HAND_GROUP_PREFIXES)
+                   and not group.name.endswith(("_Handle", "_Pole", "_Target"))]
+        if not surface:
+            return
+        weighted = set()
+        for vertex in mesh.data.vertices:
+            for membership in vertex.groups:
+                if membership.weight > 0.0:
+                    weighted.add(membership.group)
+        if any(group.index in weighted for group in surface):
+            return
+        sleeves = [group for group in mesh.vertex_groups if "Sleeve" in group.name]
+        covered, covered_name = 0, ""
+        if sleeves:
+            order = sorted(sleeves, key=lambda group: group.name)
+            sleeve_indices = {group.index for group in sleeves}
+            covered_name = order[0].name
+            for vertex in mesh.data.vertices:
+                if any(membership.group in sleeve_indices and membership.weight > 0.0
+                       for membership in vertex.groups):
+                    covered += 1
+        what = ("the hand region is skinned to %s and its chain (%d vertex/vertices)" % (covered_name, covered)
+                if sleeves else "nothing on the model owns a sleeve either")
+        names = sorted(group.name for group in surface)
+        trace.info("this model's hand bones deform nothing - %d of them, %s%s, and not one owns a vertex: rotating a "
+                   "hand control turns nothing visible, and %s. A hand control still moves the arm, because the "
+                   "forearm follows it and the elbow bends; what covers the hand hangs off the elbow in the model's "
+                   "own hierarchy, so a wrist rotation has no path to it"
+                   % (len(surface), ", ".join(names[:5]), ", ..." if len(surface) > 5 else "", what))
+
+    @staticmethod
     def _group_model_bones(model, trace, visible=True):
         """Put the model's own bones into one collection so they can be hidden as a set.
 
@@ -5511,6 +5579,15 @@ class RigifyChains(bpy.types.Operator):
         trace.check("the model is undisturbed at rest", not other_displaced,
                     "%d bones moved, worst %s" % (len(other_displaced),
                                                   other_displaced[:3] if other_displaced else ""))
+
+        # A hand inside a sleeve: the model's hand bones exist and the rig's hand controls exist, but no vertex is
+        # weighted to them, so rotating one turns nothing on screen. Measured on the two models a tester sent as
+        # outliers - Agnes Digital and Agnes Tachyon - `Wrist_L`, `Hand_Attach_L` and all ten finger bones own **zero**
+        # vertices, while `Sp_El_Sleeve0_*` owns 2468 and 1245, against 164 and 842 hand vertices on the reference.
+        # Nothing is broken to fix: the model's own hierarchy parents its sleeve chain to `Elbow_L`, so no rig that
+        # leaves that hierarchy alone can turn a cuff with a wrist. Said here because "the hand controls don't move the
+        # arms" is otherwise a report that can only be answered by measuring.
+        self._report_unweighted_hands(model, trace)
 
         # Group the model's own bones so they can be switched off as a set. MMR leaves the MMD armature hidden,
         # but a bone in **no** collection is drawn whenever that object is shown, whatever the collection
